@@ -43,7 +43,7 @@ hide_streamlit_style = """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 # === ВСТАВЬТЕ ВАШ API КЛЮЧ ЗДЕСЬ ===
-OPENROUTER_API_KEY = "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"  # Замените на ваш реальный ключ
+OPENROUTER_API_KEY = "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" 
 # =================================
 
 class ProfessionalRAG:
@@ -428,7 +428,7 @@ def main():
     st.markdown("*Чат на основе официального документа (с изменениями 2024 г.)*")
     
     # Информация об API
-    if OPENROUTER_API_KEY != "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":
+    if OPENROUTER_API_KEY != "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":
         st.sidebar.success("✅ API ключ подключен")
     else:
         st.sidebar.warning("⚠️ Вставьте ваш API ключ в код")
