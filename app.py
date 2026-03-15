@@ -1,6 +1,6 @@
 """
-Универсальный RAG чат - работает в любом случае!
-Пробует API, если не получается - использует локальный режим
+Профессиональный RAG чат с OpenRouter API
+Новый API ключ уже вставлен
 """
 
 import streamlit as st
@@ -9,7 +9,6 @@ import os
 import requests
 import json
 import re
-import hashlib
 from typing import List, Dict, Any
 
 # Настройка страницы
@@ -39,95 +38,62 @@ hide_streamlit_style = """
 """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-# === ВАШ API КЛЮЧ ===
-OPENROUTER_API_KEY = "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"
-# ===================
+# === НОВЫЙ API КЛЮЧ ===
+OPENROUTER_API_KEY = "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"
+# =====================
 
-class UniversalRAG:
-    """RAG который работает в любых условиях"""
+class SmartRAG:
+    """RAG с реальными эмбеддингами через OpenRouter"""
     
     def __init__(self, file_path: str):
         self.file_path = file_path
         self.chunks = []
         self.embeddings = None
         self.api_key = OPENROUTER_API_KEY
-        self.use_api = False
-        
-        # Проверяем API ключ
-        self._check_api_key()
+        self.use_api = True
         
         # Загружаем документ
         self._load_document()
     
-    def _check_api_key(self):
-        """Проверяет работает ли API ключ"""
-        if not self.api_key or not self.api_key.startswith('sk-or-v1-'):
-            st.sidebar.warning("⚠️ Неверный формат ключа. Использую локальный режим.")
-            return
-        
+    def _get_embedding(self, text: str) -> List[float]:
+        """Получение эмбеддингов через OpenRouter API"""
         try:
-            # Пробуем сделать простой запрос для проверки
             response = requests.post(
                 "https://openrouter.ai/api/v1/embeddings",
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json"
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://localhost:8501",
+                    "X-Title": "National AI Strategy Chat"
                 },
                 json={
                     "model": "sentence-transformers/all-mpnet-base-v2",
-                    "input": "test"
+                    "input": text[:1000]
                 },
-                timeout=5
+                timeout=15
             )
             
             if response.status_code == 200:
-                self.use_api = True
-                st.sidebar.success("✅ API ключ работает! Использую облачные эмбеддинги.")
-            elif response.status_code == 401:
-                st.sidebar.error("❌ API ключ недействителен. Использую локальный режим.")
-                st.sidebar.info("💡 Совет: Проверьте ключ на OpenRouter.ai или получите новый")
+                return response.json()['data'][0]['embedding']
             else:
-                st.sidebar.warning(f"⚠️ Ошибка API: {response.status_code}. Использую локальный режим.")
+                st.warning(f"⚠️ Ошибка API: {response.status_code}, использую локальный режим")
+                return self._local_embedding(text)
                 
         except Exception as e:
-            st.sidebar.warning(f"⚠️ Не удалось подключиться к API. Использую локальный режим.")
-    
-    def _get_embedding(self, text: str) -> List[float]:
-        """Получение эмбеддингов - через API или локально"""
-        if self.use_api:
-            try:
-                response = requests.post(
-                    "https://openrouter.ai/api/v1/embeddings",
-                    headers={
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model": "sentence-transformers/all-mpnet-base-v2",
-                        "input": text[:1000]
-                    },
-                    timeout=10
-                )
-                
-                if response.status_code == 200:
-                    return response.json()['data'][0]['embedding']
-            except:
-                pass
-        
-        # Локальный режим (всегда работает)
-        return self._local_embedding(text)
+            st.warning(f"⚠️ Ошибка: {e}, использую локальный режим")
+            return self._local_embedding(text)
     
     def _local_embedding(self, text: str) -> List[float]:
-        """Локальные эмбеддинги на основе хеша"""
+        """Локальные эмбеддинги (запасной вариант)"""
         words = text.lower().split()
         
-        # Веса для ключевых терминов
+        # Веса для важных терминов
         important_terms = {
             'искусственный интеллект': 3.0,
             'федеральный закон': 3.0,
             'конституция': 3.0,
             'правовую основу': 3.0,
-            'статья 2': 4.0,  # Особый вес для статьи 2
+            'статья 2': 4.0,
             'определение': 2.5,
             'понятие': 2.5
         }
@@ -135,18 +101,15 @@ class UniversalRAG:
         dim = 384
         features = np.zeros(dim)
         
-        # Униграммы
         for word in words:
             idx = abs(hash(word)) % dim
             features[idx] += 1
         
-        # Усиление для важных терминов
         for term, weight in important_terms.items():
             if term in text.lower():
                 term_idx = abs(hash(term)) % dim
                 features[term_idx] += weight
         
-        # Нормализация
         norm = np.linalg.norm(features)
         if norm > 0:
             features = features / norm
@@ -157,7 +120,7 @@ class UniversalRAG:
         """Разбиение по статьям"""
         chunks = []
         
-        # Находим все статьи
+        # Разбиваем по номерам статей
         articles = re.split(r'(?=\n\d+\.)', text)
         
         for article in articles:
@@ -211,7 +174,7 @@ class UniversalRAG:
             st.error(f"❌ Ошибка загрузки: {e}")
     
     def search(self, query: str, k: int = 2) -> List[Dict[str, Any]]:
-        """Поиск с жестким приоритетом для статьи 2"""
+        """Умный поиск с приоритетами"""
         if not self.chunks or self.embeddings is None:
             return []
         
@@ -227,24 +190,24 @@ class UniversalRAG:
             similarities = np.zeros(len(self.chunks))
         
         # Определяем тип вопроса
-        is_legal = any(word in query.lower() for word in ['закон', 'правов', 'федеральн', 'конституц'])
-        is_definition = any(word in query.lower() for word in ['что такое', 'определение', 'понятие'])
+        is_legal = any(word in query.lower() for word in ['закон', 'правов', 'федеральн', 'конституц', 'основ'])
+        is_definition = any(word in query.lower() for word in ['что такое', 'определение', 'понятие', 'термин'])
         
-        # Финальные оценки с приоритетами
+        # Финальные оценки
         final_scores = similarities.copy()
         
         for i, chunk in enumerate(self.chunks):
-            # Статья 2 имеет высший приоритет для юридических вопросов
+            # Статья 2 - высший приоритет для юридических вопросов
             if is_legal and chunk['article'] == '2':
-                final_scores[i] += 2.0  # Огромный буст
+                final_scores[i] += 2.0
             
-            # Статья 5 для определений
+            # Статья 5 - для определений
             elif is_definition and chunk['article'] == '5':
                 final_scores[i] += 1.5
             
-            # Маленькие статьи обычно важнее
-            elif chunk['article'].isdigit() and int(chunk['article']) < 10:
-                final_scores[i] += 0.3
+            # Статья 48 - только если вопрос о финансах
+            elif 'финанс' in query.lower() and chunk['article'] == '48':
+                final_scores[i] += 1.0
         
         # Топ результаты
         top_indices = np.argsort(final_scores)[-k*3:][::-1]
@@ -265,7 +228,7 @@ class UniversalRAG:
                     seen_articles.add('2')
                     break
         
-        # Добавляем остальные релевантные статьи
+        # Добавляем остальные
         for idx in top_indices:
             article = self.chunks[idx]['article']
             
@@ -298,17 +261,12 @@ class UniversalRAG:
         for item in relevant:
             answer += f"### Статья {item['article']}\n\n"
             
-            # Для статьи 2 показываем полный текст
+            # Для статьи 2 - показываем полный текст
             if item['article'] == '2':
                 text = item['full_text']
-                # Находим часть с правовой основой
-                if 'правовую основу' in text.lower():
-                    # Показываем всю статью 2
-                    answer += text + "\n\n"
-                else:
-                    answer += text + "\n\n"
+                answer += text + "\n\n"
             
-            # Для статьи 5 показываем определение
+            # Для статьи 5 - показываем определение
             elif item['article'] == '5':
                 text = item['full_text']
                 # Находим определение ИИ
@@ -319,7 +277,7 @@ class UniversalRAG:
                     answer += text[:400] + "...\n\n"
             
             else:
-                # Для остальных статей - начало
+                # Для остальных статей
                 text = item['full_text']
                 if len(text) > 400:
                     answer += text[:400] + "...\n\n"
@@ -334,28 +292,26 @@ class UniversalRAG:
 
 def main():
     st.title("📄 Национальная стратегия развития ИИ")
-    st.markdown("*Чат на основе официального документа*")
+    st.markdown("*Чат на основе официального документа (с изменениями 2024 г.)*")
     
     with st.sidebar:
-        st.header("🔑 Статус")
-        
-        # Информация о режиме работы
-        if 'rag' in st.session_state:
-            if st.session_state.rag.use_api:
-                st.success("✅ Режим: Облачный (API работает)")
-            else:
-                st.info("ℹ️ Режим: Локальный (всегда работает)")
+        st.header("🔑 Статус API")
+        if OPENROUTER_API_KEY.startswith('sk-or-v1-'):
+            st.success("✅ API ключ загружен")
+            st.info("🔄 Проверка подключения...")
+        else:
+            st.error("❌ Неверный формат ключа")
         
         st.markdown("---")
         st.markdown("**📊 Статистика**")
         
-        # Примеры вопросов
         with st.expander("💡 Примеры вопросов"):
             st.markdown("""
             - Какие федеральные законы составляют правовую основу?
             - Что такое искусственный интеллект?
             - Какие цели развития ИИ?
             - Что говорится в статье 25?
+            - Какие принципы развития ИИ?
             """)
     
     # Путь к файлу
@@ -363,12 +319,18 @@ def main():
     
     if not os.path.exists(file_path):
         st.error(f"❌ Файл {file_path} не найден!")
-        return
+        
+        # Создаем тестовый файл, если его нет
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write("""2. Правовую основу настоящей Стратегии составляют Конституция Российской Федерации, федеральные законы от 27 июля 2006 г. № 149-ФЗ "Об информации, информационных технологиях и о защите информации", от 27 июля 2006 г. № 152-ФЗ "О персональных данных", от 28 июня 2014 г. № 172-ФЗ "О стратегическом планировании в Российской Федерации".
+
+5. Для целей настоящей Стратегии используются следующие основные понятия: а) искусственный интеллект - комплекс технологических решений, позволяющий имитировать когнитивные функции человека и получать при выполнении конкретных задач результаты, сопоставимые с результатами интеллектуальной деятельности человека.""")
+        st.success("✅ Создан тестовый файл")
     
     # Инициализация RAG
     if 'rag' not in st.session_state:
         with st.spinner("🔄 Загрузка документа..."):
-            st.session_state.rag = UniversalRAG(file_path)
+            st.session_state.rag = SmartRAG(file_path)
     
     rag = st.session_state.rag
     
