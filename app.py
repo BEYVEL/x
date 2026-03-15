@@ -1,124 +1,64 @@
 """
-Zero-Install RAG System - No Ollama required!
-Works on Streamlit Cloud with free APIs
+Минималистичный RAG чат - Только суть
+Чистый интерфейс, полные ответы, никакого шума
 """
 
 import streamlit as st
 import numpy as np
 import requests
-import hashlib
-import json
 from pathlib import Path
 import tempfile
 import os
-from typing import List, Dict, Optional
-import time
+from typing import List, Dict
 
-# Настройка страницы
+# Настройка страницы - МИНИМАЛИЗМ
 st.set_page_config(
-    page_title="RAG Чат без установки",
-    page_icon="🚀",
-    layout="wide"
+    page_title="RAG Чат",
+    page_icon="💬",
+    layout="centered"  # Центрированный, не широкий
 )
 
-class ZeroInstallRAG:
-    """
-    RAG система которая работает без установки дополнительного ПО
-    Использует бесплатные API или встроенные функции
-    """
+# Скрываем дефолтный Streamlit мусор
+hide_streamlit_style = """
+<style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    .stApp {margin-top: -80px;}
+    .stButton>button {width: 100%;}
+</style>
+"""
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
+
+class MinimalRAG:
+    """Минималистичная RAG система - только необходимое"""
     
     def __init__(self):
-        # Пытаемся получить API ключи из секретов Streamlit
-        self.openrouter_key = st.secrets.get("OPENROUTER_API_KEY", None)
-        self.huggingface_key = st.secrets.get("HUGGINGFACE_API_KEY", None)
-        
-        # Выбираем лучший доступный бэкенд
-        self.backend = self._detect_best_backend()
-        
-        # Хранилище документов
         self.chunks = []
         self.embeddings = None
         self.sources = []
-        self.dim = 384  # Размерность эмбеддингов
+        self.dim = 384
         
-        # Статистика
-        self.api_calls = 0
-        self.fallback_used = 0
+        # Пытаемся получить API ключ (опционально)
+        self.openrouter_key = st.secrets.get("OPENROUTER_API_KEY", None)
+    
+    def _get_embedding(self, text: str) -> List[float]:
+        """Улучшенный эмбеддинг с лучшей семантикой"""
+        words = text.lower().split()
         
-        st.sidebar.success(f"✅ Бэкенд: {self.backend}")
-    
-    def _detect_best_backend(self) -> str:
-        """Автоматически выбирает лучший доступный бэкенд"""
-        if self.openrouter_key:
-            return "openrouter"
-        elif self.huggingface_key:
-            return "huggingface"
-        else:
-            return "fallback"
-    
-    def _get_embedding_openrouter(self, text: str) -> List[float]:
-        """Получение эмбеддингов через OpenRouter (бесплатно)"""
-        try:
-            response = requests.post(
-                "https://openrouter.ai/api/v1/embeddings",
-                headers={
-                    "Authorization": f"Bearer {self.openrouter_key}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": "sentence-transformers/all-mpnet-base-v2",
-                    "input": text[:1000]  # Ограничиваем длину
-                },
-                timeout=10
-            )
-            
-            if response.status_code == 200:
-                self.api_calls += 1
-                return response.json()['data'][0]['embedding']
-            else:
-                st.warning(f"OpenRouter ошибка: {response.status_code}, использую fallback")
-                self.fallback_used += 1
-                return self._get_embedding_fallback(text)
-                
-        except Exception as e:
-            st.warning(f"OpenRouter недоступен: {e}, использую fallback")
-            self.fallback_used += 1
-            return self._get_embedding_fallback(text)
-    
-    def _get_embedding_huggingface(self, text: str) -> List[float]:
-        """Получение эмбеддингов через HuggingFace Inference API"""
-        try:
-            API_URL = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2"
-            headers = {"Authorization": f"Bearer {self.huggingface_key}"}
-            
-            response = requests.post(
-                API_URL,
-                headers=headers,
-                json={"inputs": text[:1000]},
-                timeout=10
-            )
-            
-            if response.status_code == 200:
-                self.api_calls += 1
-                return response.json()[0]
-            else:
-                return self._get_embedding_fallback(text)
-                
-        except Exception:
-            return self._get_embedding_fallback(text)
-    
-    def _get_embedding_fallback(self, text: str) -> List[float]:
-        """
-        Простой эмбеддинг на основе хеша - работает всегда,
-        даже без интернета!
-        """
-        words = text.lower().split()[:100]
+        # Используем не только униграммы, но и биграммы для лучшего контекста
         features = np.zeros(self.dim)
         
-        for word in words:
-            # Используем встроенный hash (всегда доступен)
+        # Униграммы
+        for word in words[:200]:
             idx = abs(hash(word)) % self.dim
             features[idx] += 1
+        
+        # Биграммы (для лучшего понимания контекста)
+        for i in range(len(words)-1):
+            bigram = words[i] + " " + words[i+1]
+            idx = abs(hash(bigram)) % self.dim
+            features[idx] += 0.5  # Меньший вес для биграмм
         
         # Нормализация
         norm = np.linalg.norm(features)
@@ -127,325 +67,247 @@ class ZeroInstallRAG:
         
         return features.tolist()
     
-    def get_embedding(self, text: str) -> List[float]:
-        """Универсальный метод получения эмбеддингов"""
-        if self.backend == "openrouter" and self.openrouter_key:
-            return self._get_embedding_openrouter(text)
-        elif self.backend == "huggingface" and self.huggingface_key:
-            return self._get_embedding_huggingface(text)
-        else:
-            return self._get_embedding_fallback(text)
-    
-    def generate_answer_openrouter(self, question: str, context: str) -> str:
-        """Генерация ответа через OpenRouter"""
-        prompt = f"""Ты ассистент, отвечающий на вопросы на русском языке.
-Используй ТОЛЬКО информацию из контекста ниже.
-
-КОНТЕКСТ:
-{context}
-
-ВОПРОС: {question}
-
-ОТВЕТ (на русском, только на основе контекста):"""
+    def add_document(self, text: str, source: str = "документ"):
+        """Добавление документа с умным чанкингом"""
+        # Разбиваем на предложения, потом собираем в чанки
+        sentences = text.replace('!', '.').replace('?', '.').split('.')
         
-        try:
-            response = requests.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self.openrouter_key}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": "mistralai/mistral-7b-instruct:free",  # Бесплатная модель
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.3,
-                    "max_tokens": 500
-                },
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                return response.json()['choices'][0]['message']['content']
-            else:
-                return f"❌ Ошибка API: {response.status_code}"
-                
-        except Exception as e:
-            return f"❌ Ошибка: {str(e)}"
-    
-    def generate_answer_huggingface(self, question: str, context: str) -> str:
-        """Генерация ответа через HuggingFace"""
-        prompt = f"""<|system|>
-Ты ассистент, отвечающий на русском языке. Используй только контекст.</s>
-<|user|>
-Контекст: {context}
-
-Вопрос: {question}</s>
-<|assistant|>"""
+        chunks = []
+        current_chunk = ""
         
-        try:
-            API_URL = "https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta"
-            headers = {"Authorization": f"Bearer {self.huggingface_key}"}
-            
-            response = requests.post(
-                API_URL,
-                headers=headers,
-                json={
-                    "inputs": prompt,
-                    "parameters": {
-                        "max_new_tokens": 300,
-                        "temperature": 0.3
-                    }
-                },
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                result = response.json()[0]['generated_text']
-                # Извлекаем только ответ ассистента
-                if "<|assistant|>" in result:
-                    return result.split("<|assistant|>")[-1].strip()
-                return result
-            else:
-                return self._generate_answer_fallback(question, context)
-                
-        except Exception:
-            return self._generate_answer_fallback(question, context)
-    
-    def _generate_answer_fallback(self, question: str, context: str) -> str:
-        """
-        Простой ответ на основе ключевых слов - работает всегда
-        """
-        # Ищем предложения с ключевыми словами из вопроса
-        question_words = set(question.lower().split())
-        sentences = context.replace('!', '.').replace('?', '.').split('.')
-        
-        best_sentences = []
         for sentence in sentences:
             sentence = sentence.strip()
             if not sentence:
                 continue
             
-            # Считаем совпадения слов
-            sentence_words = set(sentence.lower().split())
-            matches = len(question_words & sentence_words)
-            if matches > 0:
-                best_sentences.append((sentence, matches))
+            # Если предложение большое, разбиваем его
+            if len(sentence) > 300:
+                words = sentence.split()
+                temp_chunk = ""
+                for word in words:
+                    if len(temp_chunk) + len(word) < 300:
+                        temp_chunk += word + " "
+                    else:
+                        if temp_chunk:
+                            chunks.append(temp_chunk.strip())
+                        temp_chunk = word + " "
+                if temp_chunk:
+                    chunks.append(temp_chunk.strip())
+            else:
+                # Добавляем к текущему чанку
+                if len(current_chunk) + len(sentence) < 500:
+                    current_chunk += sentence + ". "
+                else:
+                    if current_chunk:
+                        chunks.append(current_chunk.strip())
+                    current_chunk = sentence + ". "
         
-        # Сортируем по релевантности
-        best_sentences.sort(key=lambda x: x[1], reverse=True)
+        if current_chunk:
+            chunks.append(current_chunk.strip())
         
-        if best_sentences:
-            answer = "📄 **На основе документов:**\n\n"
-            for sent, score in best_sentences[:3]:
-                answer += f"• {sent.strip()}\n\n"
-            return answer
-        else:
-            return "❌ Не найдено информации в документах."
-    
-    def generate_answer(self, question: str, context_chunks: List[Dict]) -> str:
-        """Универсальный метод генерации ответа"""
-        # Формируем контекст из найденных чанков
-        context = "\n\n".join([f"[{c['source']}]: {c['text']}" for c in context_chunks])
-        
-        if self.backend == "openrouter" and self.openrouter_key:
-            return self.generate_answer_openrouter(question, context)
-        elif self.backend == "huggingface" and self.huggingface_key:
-            return self.generate_answer_huggingface(question, context)
-        else:
-            return self._generate_answer_fallback(question, context)
-    
-    def add_document(self, text: str, source: str = "document"):
-        """Добавление документа с эмбеддингами"""
-        # Простое разбиение на чанки
-        chunk_size = 500
-        overlap = 50
-        
-        chunks = []
-        for i in range(0, len(text), chunk_size - overlap):
-            chunk = text[i:i + chunk_size].strip()
-            if chunk and len(chunk) > 50:
-                chunks.append(chunk)
+        # Фильтруем пустые и слишком короткие чанки
+        chunks = [c for c in chunks if len(c) > 50]
         
         if not chunks:
             return 0
         
-        # Прогресс бар
-        progress_bar = st.progress(0)
-        
-        # Генерация эмбеддингов
+        # Генерируем эмбеддинги
         chunk_embeddings = []
-        for i, chunk in enumerate(chunks):
-            embedding = self.get_embedding(chunk)
+        for chunk in chunks:
+            embedding = self._get_embedding(chunk)
             chunk_embeddings.append(embedding)
-            progress_bar.progress((i + 1) / len(chunks))
-        
-        progress_bar.empty()
         
         # Сохраняем
-        start_idx = len(self.chunks)
         self.chunks.extend(chunks)
         self.sources.extend([source] * len(chunks))
         
-        # Обновляем матрицу эмбеддингов
-        new_embeddings = np.array(chunk_embeddings)
         if self.embeddings is None:
-            self.embeddings = new_embeddings
+            self.embeddings = np.array(chunk_embeddings)
         else:
-            self.embeddings = np.vstack([self.embeddings, new_embeddings])
+            self.embeddings = np.vstack([self.embeddings, np.array(chunk_embeddings)])
         
         return len(chunks)
     
-    def add_file(self, filepath: str):
-        """Добавление файла"""
-        try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                text = f.read()
-            return self.add_document(text, source=os.path.basename(filepath))
-        except Exception as e:
-            st.error(f"Ошибка чтения {filepath}: {e}")
-            return 0
-    
     def search(self, query: str, k: int = 3) -> List[Dict]:
-        """Поиск релевантных чанков"""
+        """Поиск с реранкингом для лучшей точности"""
         if not self.chunks:
             return []
         
-        # Получаем эмбеддинг запроса
-        query_emb = np.array(self.get_embedding(query))
+        query_emb = np.array(self._get_embedding(query))
         
         # Косинусное сходство
-        similarities = np.dot(self.embeddings, query_emb) / (
-            np.linalg.norm(self.embeddings, axis=1) * np.linalg.norm(query_emb)
-        )
+        norms = np.linalg.norm(self.embeddings, axis=1)
+        query_norm = np.linalg.norm(query_emb)
         
-        # Топ-K результатов
-        top_indices = np.argsort(similarities)[-k:][::-1]
+        if norms.all() and query_norm:
+            similarities = np.dot(self.embeddings, query_emb) / (norms * query_norm)
+        else:
+            similarities = np.zeros(len(self.chunks))
+        
+        # Дополнительный реранкинг по ключевым словам
+        query_words = set(query.lower().split())
+        keyword_scores = []
+        
+        for chunk in self.chunks:
+            chunk_words = set(chunk.lower().split())
+            overlap = len(query_words & chunk_words) / max(len(query_words), 1)
+            keyword_scores.append(overlap * 0.3)  # 30% вес
+        
+        # Финальные оценки
+        final_scores = similarities + np.array(keyword_scores)
+        
+        # Топ результаты
+        top_indices = np.argsort(final_scores)[-k:][::-1]
         
         results = []
         for idx in top_indices:
-            if not np.isnan(similarities[idx]):
+            if final_scores[idx] > 0.1:  # Минимальный порог
                 results.append({
                     'text': self.chunks[idx],
                     'source': self.sources[idx],
-                    'similarity': float(similarities[idx])
+                    'score': float(final_scores[idx])
                 })
         
         return results
     
-    def query(self, question: str, k: int = 3) -> str:
-        """Полный RAG цикл"""
-        # Поиск
-        relevant = self.search(question, k=k)
+    def generate_answer(self, question: str, context: List[Dict]) -> str:
+        """Генерация ПОЛНОГО ответа без обрезания"""
+        if not context:
+            return "❌ Информация не найдена."
         
-        if not relevant:
-            return "❌ Не найдено релевантной информации."
+        # Собираем ВЕСЬ релевантный контекст
+        full_context = "\n\n".join([c['text'] for c in context])
         
-        # Генерация ответа
-        answer = self.generate_answer(question, relevant)
+        # Если есть OpenRouter, используем его для лучших ответов
+        if self.openrouter_key:
+            try:
+                prompt = f"""Контекст: {full_context}
+
+Вопрос: {question}
+
+Дай полный, развернутый ответ на русском языке, используя только информацию из контекста.
+Не обрезай ответ, пиши все детали."""
+
+                response = requests.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.openrouter_key}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "model": "mistralai/mistral-7b-instruct:free",
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0.2,
+                        "max_tokens": 1000  # Увеличиваем лимит
+                    },
+                    timeout=30
+                )
+                
+                if response.status_code == 200:
+                    return response.json()['choices'][0]['message']['content']
+            except:
+                pass  # Если API не работает, используем fallback
         
-        # Добавляем информацию о источниках
-        answer += "\n\n---\n**📚 Источники:**\n"
-        for r in relevant:
-            preview = r['text'][:100] + "..." if len(r['text']) > 100 else r['text']
-            answer += f"• {r['source']}: {preview}\n"
+        # Fallback: собираем полный контекст
+        answer = "📄 **На основе документов:**\n\n"
+        
+        # Группируем по источникам для лучшей читаемости
+        sources_dict = {}
+        for item in context:
+            if item['source'] not in sources_dict:
+                sources_dict[item['source']] = []
+            sources_dict[item['source']].append(item['text'])
+        
+        for source, texts in sources_dict.items():
+            answer += f"**{source}:**\n"
+            for text in texts:
+                # Добавляем текст ПОЛНОСТЬЮ, не обрезаем
+                answer += f"{text}\n\n"
         
         return answer
 
 def main():
-    st.title("🚀 RAG Чат - НИЧЕГО НЕ НАДО УСТАНАВЛИВАТЬ!")
-    st.markdown("Просто загрузите документы и задавайте вопросы")
+    # Заголовок - минимально
+    st.title("💬 Чат с документами")
     
-    # Инициализация RAG
+    # Инициализация
     if 'rag' not in st.session_state:
-        st.session_state.rag = ZeroInstallRAG()
+        st.session_state.rag = MinimalRAG()
+    
+    if 'messages' not in st.session_state:
+        st.session_state.messages = []
     
     rag = st.session_state.rag
     
-    # Сайдбар
+    # Минимальный сайдбар
     with st.sidebar:
-        st.header("📁 Документы")
+        st.markdown("### 📁 Загрузка")
         
-        # Загрузка файлов
-        uploaded_files = st.file_uploader(
-            "Загрузите текстовые файлы",
-            type=['txt', 'md', 'csv'],
-            accept_multiple_files=True
+        uploaded_file = st.file_uploader(
+            "Выберите файл",
+            type=['txt'],
+            label_visibility="collapsed"
         )
         
-        if uploaded_files:
-            for uploaded_file in uploaded_files:
-                # Сохраняем временно
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.txt', mode='w', encoding='utf-8') as f:
-                    content = uploaded_file.read().decode('utf-8', errors='ignore')
-                    f.write(content)
-                    temp_path = f.name
-                
-                # Добавляем в RAG
-                count = rag.add_file(temp_path)
-                if count > 0:
-                    st.success(f"✅ {uploaded_file.name}: {count} чанков")
-                
-                # Удаляем временный файл
-                os.unlink(temp_path)
-        
-        st.divider()
-        
-        # Пример документа
-        with st.expander("📝 Добавить пример"):
-            if st.button("Загрузить пример документа"):
-                sample = """RAG (Retrieval-Augmented Generation) - это метод, который улучшает работу языковых моделей.
-                
-Система RAG состоит из двух основных компонентов:
-1. Поисковая система - находит релевантные документы
-2. Генератор - создает ответ на основе найденных документов
-
-Преимущества RAG:
-- Уменьшение галлюцинаций
-- Возможность обновлять знания без переобучения
-- Прозрачность - можно показать источники
-
-Гибридный поиск объединяет семантическое сходство и ключевые слова."""
-                
-                rag.add_document(sample, source="пример.txt")
-                st.success("✅ Пример загружен!")
+        if uploaded_file:
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.txt', mode='w', encoding='utf-8') as f:
+                content = uploaded_file.read().decode('utf-8', errors='ignore')
+                f.write(content)
+                count = rag.add_document(content, source=uploaded_file.name)
+                os.unlink(f.name)
+            
+            if count > 0:
+                st.success(f"✅ Загружено: {uploaded_file.name}")
                 st.rerun()
         
-        st.divider()
+        if st.button("📝 Пример документа"):
+            sample = """Стратегия развития искусственного интеллекта в России определяет основные направления развития технологий ИИ до 2030 года.
+
+Правовую основу настоящей Стратегии составляют Конституция Российской Федерации, федеральные законы от 27 июля 2006 г. № 149-ФЗ "Об информации, информационных технологиях и о защите информации" и от 27 июля 2006 г. № 152-ФЗ "О персональных данных".
+
+Основными источниками финансового обеспечения реализации настоящей Стратегии являются средства федерального бюджета, бюджетов субъектов Российской Федерации, а также внебюджетные источники.
+
+В целях аналитической поддержки реализации настоящей Стратегии проводятся научные исследования, направленные на прогнозирование развития технологий искусственного интеллекта и оценку эффективности внедрения таких технологий в различные отрасли экономики.
+
+Ключевыми направлениями развития ИИ в России являются: компьютерное зрение, обработка естественного языка, распознавание и синтез речи, рекомендательные системы и системы поддержки принятия решений."""
+            
+            rag.add_document(sample, source="стратегия.txt")
+            st.success("✅ Пример загружен")
+            st.rerun()
         
-        # Статистика
-        st.header("📊 Статистика")
-        st.write(f"**Чанков:** {len(rag.chunks)}")
-        st.write(f"**Бэкенд:** {rag.backend}")
-        st.write(f"**API вызовов:** {rag.api_calls}")
-        st.write(f"**Fallback:** {rag.fallback_used}")
+        # Минимальная статистика
+        if rag.chunks:
+            st.markdown("---")
+            st.markdown(f"📊 **{len(rag.chunks)}** чанков")
+            st.markdown(f"📚 **{len(set(rag.sources))}** документов")
     
-    # Основной чат
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-    
-    # Отображение истории
+    # Отображение истории чата
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
     
     # Ввод вопроса
-    if prompt := st.chat_input("Задайте вопрос по документам..."):
-        # Сохраняем вопрос
+    if prompt := st.chat_input("Задайте вопрос..."):
+        # Добавляем вопрос
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
         
         # Получаем ответ
         with st.chat_message("assistant"):
-            with st.spinner("🔍 Ищу ответ..."):
-                response = rag.query(prompt)
+            with st.spinner("🔍 Поиск..."):
+                # Ищем релевантные чанки
+                relevant = rag.search(prompt, k=5)
+                
+                if not relevant:
+                    response = "❌ Информация не найдена."
+                else:
+                    # Генерируем полный ответ
+                    response = rag.generate_answer(prompt, relevant)
+                
                 st.markdown(response)
         
         st.session_state.messages.append({"role": "assistant", "content": response})
-    
-    # Информация о бэкенде
-    if rag.backend == "fallback":
-        st.info("ℹ️ Работаю в автономном режиме. Для лучших результатов добавьте API ключи в secrets!")
 
 if __name__ == "__main__":
     main()
