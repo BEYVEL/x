@@ -51,7 +51,7 @@ class ProfessionalRAG:
         """Проверка доступности Ollama и моделей"""
         try:
             # Проверяем работает ли Ollama
-            response = requests.get("http://localhost:11434/api/tags")
+            response = requests.get("http://localhost:11434/api/tags", timeout=5)
             if response.status_code == 200:
                 models = response.json().get('models', [])
                 model_names = [m['name'] for m in models]
@@ -68,6 +68,8 @@ class ProfessionalRAG:
                 st.sidebar.error("❌ Ollama не отвечает. Запустите: ollama serve")
         except requests.exceptions.ConnectionError:
             st.sidebar.error("❌ Ollama не запущена. Установите и запустите: https://ollama.com")
+        except Exception as e:
+            st.sidebar.error(f"❌ Ошибка: {e}")
     
     def get_embedding(self, text: str) -> List[float]:
         """
@@ -84,8 +86,9 @@ class ProfessionalRAG:
                 "http://localhost:11434/api/embeddings",
                 json={
                     "model": self.embedding_model,
-                    "prompt": text
-                }
+                    "prompt": text[:1000]  # Ограничиваем длину
+                },
+                timeout=30
             )
             
             if response.status_code == 200:
@@ -270,9 +273,13 @@ class ProfessionalRAG:
         query_embedding = np.array(query_embedding)
         
         # Семантический поиск (косинусное сходство)
-        similarities = np.dot(self.embeddings, query_embedding) / (
-            np.linalg.norm(self.embeddings, axis=1) * np.linalg.norm(query_embedding)
-        )
+        norms = np.linalg.norm(self.embeddings, axis=1)
+        query_norm = np.linalg.norm(query_embedding)
+        
+        if norms.all() and query_norm:
+            similarities = np.dot(self.embeddings, query_embedding) / (norms * query_norm)
+        else:
+            similarities = np.zeros(len(self.chunks))
         
         # Ключевой поиск (простые ключевые слова)
         query_words = set(query.lower().split())
@@ -297,6 +304,9 @@ class ProfessionalRAG:
         seen_sources = set()
         
         for idx in top_indices:
+            if np.isnan(combined_scores[idx]):
+                continue
+                
             source = self.sources[idx]
             
             # Ограничиваем количество чанков из одного источника
@@ -309,7 +319,7 @@ class ProfessionalRAG:
                 'text': self.chunks[idx],
                 'source': source,
                 'similarity': float(combined_scores[idx]),
-                'semantic_score': float(similarities[idx]),
+                'semantic_score': float(similarities[idx]) if not np.isnan(similarities[idx]) else 0,
                 'keyword_score': float(keyword_scores[idx])
             })
             seen_sources.add(source)
@@ -366,9 +376,10 @@ class ProfessionalRAG:
                     "options": {
                         "temperature": 0.3,  # Низкая температура для точности
                         "top_p": 0.9,
-                        "max_tokens": 1000
+                        "max_tokens": 500
                     }
-                }
+                },
+                timeout=60
             )
             
             if response.status_code == 200:
@@ -474,6 +485,8 @@ def main():
                 
                 # Удаляем временный файл
                 os.unlink(temp_path)
+            
+            st.rerun()
         
         st.divider()
         
@@ -487,7 +500,18 @@ def main():
             
             st.write(f"**Всего чанков:** {len(rag.chunks)}")
         else:
-            st.info("Нет загруженных документов")
+            st.info("📭 Нет загруженных документов")
+            
+            # Пример документа
+            with st.expander("📝 Загрузить пример"):
+                if st.button("Добавить пример документа"):
+                    sample_text = """RAG (Retrieval-Augmented Generation) - это метод, который объединяет поиск информации с генерацией текста.
+Система сначала ищет релевантные документы в базе знаний, а затем использует их как контекст для генерации ответов.
+Преимущества RAG включают уменьшение галлюцинаций и возможность цитирования источников.
+Гибридный поиск в RAG комбинирует семантическое сходство с ключевыми словами для лучших результатов."""
+                    rag.add_document(sample_text, source="пример.txt")
+                    st.success("✅ Пример добавлен!")
+                    st.rerun()
     
     # Основной интерфейс
     col1, col2 = st.columns([2, 1])
@@ -522,12 +546,8 @@ def main():
     with col2:
         st.subheader("ℹ️ Информация")
         
-        with st.expander("Как улучшить качество"):
+        with st.expander("📌 Как улучшить качество"):
             st.markdown("""
-            **📌 Рекомендации:**
+            **Рекомендации:**
             
             1. **Установите лучшие модели:**
-            ```bash
-            ollama pull mxbai-embed-large  # для эмбеддингов
-            ollama pull gemma2:2b          # для ответов
-            ollama pull llama3.2:3b        # альтернатива
