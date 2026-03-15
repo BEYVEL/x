@@ -44,7 +44,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # === ВАШ КЛЮЧ ===
-HUGGINGFACE_API_KEY = "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"
+HUGGINGFACE_API_KEY = " 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"
 # ===============
 
 class RealRAG:
