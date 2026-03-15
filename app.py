@@ -1,5 +1,5 @@
 """
-ПРОФЕССИОНАЛЬНЫЙ RAG с OpenRouter LLM
+ПРОФЕССИОНАЛЬНЫЙ RAG с Hugging Face LLM
 НАСТОЯЩЕЕ ПОНИМАНИЕ ТЕКСТА
 """
 
@@ -47,50 +47,52 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# === ВАШ OPENROUTER КЛЮЧ ===
-OPENROUTER_API_KEY = "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"
+# === ВАШ HUGGING FACE КЛЮЧ ===
+HF_API_KEY = "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"
 # ==========================
 
-class OpenRouterRAG:
-    """RAG с настоящей LLM через OpenRouter"""
+class HuggingFaceRAG:
+    """RAG с настоящей LLM через Hugging Face"""
     
     def __init__(self, file_path: str):
         self.file_path = file_path
         self.articles = {}
         self.embeddings = {}
-        self.api_key = OPENROUTER_API_KEY
+        self.api_key = HF_API_KEY
         
         # Проверяем ключ
-        if not self.api_key.startswith('sk-or-v1-'):
-            st.error("❌ Неверный формат ключа OpenRouter")
+        if not self.api_key.startswith('hf_'):
+            st.error("❌ Неверный формат Hugging Face ключа")
         else:
-            st.sidebar.success("✅ OpenRouter ключ загружен")
+            st.sidebar.success("✅ Hugging Face ключ загружен")
         
         # Загружаем документ
         self._load_document()
     
     def _get_embedding(self, text: str) -> List[float]:
-        """Эмбеддинги для поиска"""
+        """Эмбеддинги для поиска через Hugging Face"""
         try:
+            # Используем модель эмбеддингов от Hugging Face
             response = requests.post(
-                "https://openrouter.ai/api/v1/embeddings",
+                "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2",
                 headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json"
+                    "Authorization": f"Bearer {self.api_key}"
                 },
                 json={
-                    "model": "sentence-transformers/all-mpnet-base-v2",
-                    "input": text[:1000]
+                    "inputs": text[:1000],
+                    "options": {"wait_for_model": True}
                 },
-                timeout=10
+                timeout=30
             )
             
             if response.status_code == 200:
-                return response.json()['data'][0]['embedding']
-        except:
-            pass
+                return response.json()
+            else:
+                st.sidebar.warning(f"Ошибка эмбеддингов: {response.status_code}, использую fallback")
+        except Exception as e:
+            st.sidebar.warning(f"Ошибка API эмбеддингов: {str(e)[:50]}...")
         
-        # Запасной вариант
+        # Запасной вариант (fallback) - статистический эмбеддинг
         words = text.lower().split()
         dim = 384
         features = np.zeros(dim)
@@ -103,7 +105,7 @@ class OpenRouterRAG:
     
     def _generate_with_llm(self, context: str, question: str) -> str:
         """
-        Генерация ответа через OpenRouter с моделью Mistral
+        Генерация ответа через Hugging Face Inference API
         """
         
         prompt = f"""Ты - эксперт по Национальной стратегии развития искусственного интеллекта РФ.
@@ -120,30 +122,43 @@ class OpenRouterRAG:
 ОТВЕТ:"""
         
         try:
+            # Используем Mistral через Hugging Face
             response = requests.post(
-                "https://openrouter.ai/api/v1/chat/completions",
+                "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3",
                 headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": "https://localhost:8501",
-                    "X-Title": "National AI Strategy Chat"
+                    "Authorization": f"Bearer {self.api_key}"
                 },
                 json={
-                    "model": "mistralai/mistral-7b-instruct:free",
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.3,
-                    "max_tokens": 500
+                    "inputs": prompt,
+                    "parameters": {
+                        "max_new_tokens": 500,
+                        "temperature": 0.3,
+                        "top_p": 0.95,
+                        "do_sample": True
+                    },
+                    "options": {
+                        "wait_for_model": True
+                    }
                 },
-                timeout=30
+                timeout=60
             )
             
             if response.status_code == 200:
-                return response.json()['choices'][0]['message']['content']
-            elif response.status_code == 402:
-                return "❌ Требуется пополнить баланс OpenRouter (минимум $10)"
+                result = response.json()
+                if isinstance(result, list) and len(result) > 0:
+                    if "generated_text" in result[0]:
+                        return result[0]["generated_text"]
+                    else:
+                        return result[0]
+                else:
+                    return str(result)
+            elif response.status_code == 503:
+                return "⏳ Модель загружается, подождите минуту и попробуйте снова..."
             else:
-                return f"❌ Ошибка API: {response.status_code}"
+                return f"❌ Ошибка API: {response.status_code} - {response.text[:200]}"
                 
+        except requests.exceptions.Timeout:
+            return "❌ Таймаут запроса. Модель может загружаться долго, попробуйте позже."
         except Exception as e:
             return f"❌ Ошибка: {str(e)}"
     
@@ -245,8 +260,16 @@ class OpenRouterRAG:
         
         context = "\n\n".join(context_parts)
         
+        # Показываем контекст для отладки (опционально)
+        if st.sidebar.checkbox("Показать контекст", False):
+            st.sidebar.text_area("Контекст для LLM", context[:500] + "...", height=200)
+        
         # Генерируем ответ через LLM
         answer = self._generate_with_llm(context, question)
+        
+        # Очищаем ответ от повторения вопроса (иногда модели повторяют)
+        if question in answer:
+            answer = answer.replace(question, "").strip()
         
         # Добавляем источники
         answer += f"\n\n<div class='source-box'>📚 Источники: Статьи {', '.join(articles_used)}</div>"
@@ -255,7 +278,7 @@ class OpenRouterRAG:
 
 def main():
     st.title("📄 Национальная стратегия развития ИИ")
-    st.markdown("*Анализ с настоящей LLM через OpenRouter*")
+    st.markdown("*Анализ с настоящей LLM через Hugging Face*")
     
     with st.sidebar:
         st.header("❓ Примеры вопросов")
@@ -265,7 +288,8 @@ def main():
             "📌 Что такое ИИ?": "Что такое искусственный интеллект по определению стратегии?",
             "📌 Большие фундаментальные модели": "Что такое большие фундаментальные модели и какой порог параметров?",
             "📌 Цели развития": "Какие цели развития ИИ указаны в стратегии?",
-            "📌 Доверенные технологии": "Что такое доверенные технологии ИИ?"
+            "📌 Доверенные технологии": "Что такое доверенные технологии ИИ?",
+            "📌 Принципы развития": "Какие основные принципы развития ИИ указаны в документе?"
         }
         
         for btn_text, question in examples.items():
@@ -275,22 +299,43 @@ def main():
         st.markdown("---")
         st.info("""
         **Как получить ответы:**
-        1. Ключ OpenRouter загружен
-        2. Нужен баланс минимум $10
-        3. Модель: Mistral-7B
+        1. Используется Hugging Face Inference API
+        2. Модель: Mistral-7B-Instruct
+        3. При первом запросе модель может загружаться ~30 сек
         """)
+        
+        # Опция для использования только поиска без LLM
+        if st.checkbox("🔄 Только поиск (без генерации)", False):
+            st.session_state.search_only = True
+        else:
+            st.session_state.search_only = False
     
     # Путь к файлу
     file_path = "filerag.txt"
     
     if not os.path.exists(file_path):
         st.error(f"❌ Файл {file_path} не найден!")
+        
+        # Создаем тестовый файл для проверки
+        if st.button("📝 Создать тестовый файл"):
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write("""1. ОСНОВНЫЕ ПОЛОЖЕНИЯ
+Настоящая Стратегия определяет цели и задачи развития искусственного интеллекта.
+
+2. ПРАВОВАЯ ОСНОВА
+Федеральный закон "Об искусственном интеллекте" и другие нормативные акты.
+
+3. ОПРЕДЕЛЕНИЯ
+Искусственный интеллект - комплекс технологических решений.
+Большие фундаментальные модели - нейросети с количеством параметров более 10 млрд.
+Доверенные технологии ИИ - технологии, соответствующие требованиям безопасности.""")
+            st.rerun()
         return
     
     # Инициализация
     if 'rag' not in st.session_state:
         with st.spinner("🔄 Загрузка документа..."):
-            st.session_state.rag = OpenRouterRAG(file_path)
+            st.session_state.rag = HuggingFaceRAG(file_path)
     
     # История
     if "messages" not in st.session_state:
@@ -306,13 +351,13 @@ def main():
             st.markdown(prompt)
         
         with st.chat_message("assistant"):
-            with st.spinner("🤔 Анализирую документ через LLM..."):
+            with st.spinner("🤔 Анализирую документ через Hugging Face LLM..."):
                 response = st.session_state.rag.query(prompt)
                 st.markdown(response, unsafe_allow_html=True)
         
         st.session_state.messages.append({"role": "assistant", "content": response})
     
-    # Отображение
+    # Отображение истории
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             if message["role"] == "assistant":
@@ -327,7 +372,7 @@ def main():
             st.markdown(prompt)
         
         with st.chat_message("assistant"):
-            with st.spinner("🤔 Анализирую документ через LLM..."):
+            with st.spinner("🤔 Анализирую документ через Hugging Face LLM..."):
                 response = st.session_state.rag.query(prompt)
                 st.markdown(response, unsafe_allow_html=True)
         
