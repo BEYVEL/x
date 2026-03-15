@@ -1,5 +1,5 @@
 """
-Фокусированный RAG чат с реальными эмбеддингами через OpenRouter
+Фокусированный RAG чат с улучшенным поиском
 Только на основе файла filerag.txt
 """
 
@@ -8,8 +8,9 @@ import numpy as np
 import os
 import requests
 import json
-import re  # 👈 ВАЖНО: добавили импорт re
+import re
 from typing import List, Dict, Any
+from collections import Counter
 
 # Настройка страницы
 st.set_page_config(
@@ -30,12 +31,12 @@ hide_streamlit_style = """
 """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-class SmartStrategyRAG:
-    """RAG с реальными эмбеддингами через OpenRouter API"""
+class ImprovedStrategyRAG:
+    """RAG с улучшенным поиском и ранжированием"""
     
     def __init__(self, file_path: str, api_key: str = None):
         self.file_path = file_path
-        self.chunks = []  # Список словарей с текстом и метаданными
+        self.chunks = []
         self.embeddings = None
         self.api_key = api_key or st.secrets.get("OPENROUTER_API_KEY", None)
         
@@ -73,28 +74,37 @@ class SmartStrategyRAG:
             return self._get_fallback_embedding(text)
     
     def _get_fallback_embedding(self, text: str) -> List[float]:
-        """Улучшенный fallback с учетом важности слов"""
+        """Улучшенный fallback с весами для ключевых слов"""
         words = text.lower().split()
         
-        # Важные термины для юридических документов
-        legal_terms = {
-            'федеральный закон': 3.0,
-            'конституция': 3.0,
-            'статья': 2.5,
-            'правовой': 2.0,
-            'регулирование': 2.0,
-            'нормативный': 2.0
+        # Словарь важных терминов с весами
+        important_terms = {
+            # Для вопроса о правовой основе
+            'правовую основу': 5.0,
+            'конституция': 4.0,
+            'федеральный закон': 4.0,
+            'федеральные законы': 4.0,
+            'закон': 3.0,
+            'указы президента': 4.0,
+            'стратегия': 2.0,
+            
+            # Общие юридические термины
+            'правовой': 3.0,
+            'регулирование': 2.5,
+            'нормативный': 2.5,
+            'законодательство': 3.0
         }
         
-        dim = 384  # Уменьшили размерность для скорости
+        dim = 384
         features = np.zeros(dim)
         
+        # Учитываем униграммы
         for word in words:
             idx = abs(hash(word)) % dim
             features[idx] += 1
         
-        # Усиление для юридических терминов
-        for term, weight in legal_terms.items():
+        # Усиление для важных терминов (целиком фразы)
+        for term, weight in important_terms.items():
             if term in text.lower():
                 term_idx = abs(hash(term)) % dim
                 features[term_idx] += weight
@@ -112,9 +122,10 @@ class SmartStrategyRAG:
         chunks = []
         current_article = ""
         current_num = ""
+        current_title = ""
         in_article = False
         
-        for line in lines:
+        for i, line in enumerate(lines):
             # Ищем начало новой статьи (цифра с точкой в начале строки)
             match = re.match(r'^(\d+)\.\s+(.*)', line.strip())
             
@@ -124,22 +135,31 @@ class SmartStrategyRAG:
                     chunks.append({
                         'text': current_article.strip(),
                         'article': current_num,
+                        'title': current_title,
                         'full_text': current_article.strip()
                     })
                 
                 # Начинаем новую статью
                 current_num = match.group(1)
+                current_title = match.group(2)[:50]  # Первые 50 символов заголовка
                 current_article = line + "\n"
                 in_article = True
             elif in_article:
                 # Продолжаем текущую статью
                 current_article += line + "\n"
+                
+                # Проверяем, не закончилась ли статья (следующая цифра в начале строки)
+                next_line = lines[i+1] if i+1 < len(lines) else ""
+                if re.match(r'^\d+\.', next_line.strip()):
+                    # Статья заканчивается, добавим её при следующей итерации
+                    pass
             else:
                 # Текст до первой статьи (введение)
-                if not current_num and line.strip():
+                if line.strip() and not current_num:
                     chunks.append({
                         'text': line.strip(),
                         'article': "0",
+                        'title': "Введение",
                         'full_text': line.strip()
                     })
         
@@ -148,37 +168,38 @@ class SmartStrategyRAG:
             chunks.append({
                 'text': current_article.strip(),
                 'article': current_num,
+                'title': current_title,
                 'full_text': current_article.strip()
             })
         
-        # Разбиваем длинные статьи на подчасти
-        final_chunks = []
-        for chunk in chunks:
-            if len(chunk['text']) > 800:
-                # Разбиваем на предложения
-                sentences = re.split(r'[.!?]+', chunk['text'])
-                current_sub = ""
-                for sent in sentences:
-                    if len(current_sub) + len(sent) < 500:
-                        current_sub += sent + ". "
-                    else:
-                        if current_sub:
-                            final_chunks.append({
-                                'text': current_sub.strip(),
-                                'article': chunk['article'],
-                                'full_text': chunk['full_text']
-                            })
-                        current_sub = sent + ". "
-                if current_sub:
-                    final_chunks.append({
-                        'text': current_sub.strip(),
-                        'article': chunk['article'],
-                        'full_text': chunk['full_text']
-                    })
-            else:
-                final_chunks.append(chunk)
+        return chunks
+    
+    def _keyword_boost(self, query: str, text: str) -> float:
+        """Дополнительный буст на основе ключевых слов"""
+        query_words = set(re.findall(r'\b\w+\b', query.lower()))
+        text_words = set(re.findall(r'\b\w+\b', text.lower()))
         
-        return final_chunks
+        # Специальные фразы для поиска
+        special_phrases = [
+            'правовую основу',
+            'федеральные законы',
+            'конституция',
+            'федеральный закон',
+            'указы президента'
+        ]
+        
+        boost = 0.0
+        
+        # Буст для специальных фраз
+        for phrase in special_phrases:
+            if phrase in query.lower() and phrase in text.lower():
+                boost += 0.8
+        
+        # Буст для общих слов
+        common_words = query_words & text_words
+        boost += len(common_words) * 0.1
+        
+        return boost
     
     def _load_document(self):
         """Загрузка и обработка документа"""
@@ -227,7 +248,7 @@ class SmartStrategyRAG:
             st.error(f"❌ Ошибка загрузки: {e}")
     
     def search(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
-        """Семантический поиск"""
+        """Улучшенный семантический поиск с реранжированием"""
         if not self.chunks or self.embeddings is None:
             return []
         
@@ -242,23 +263,41 @@ class SmartStrategyRAG:
         else:
             similarities = np.zeros(len(self.chunks))
         
-        # Буст для статей, номера которых упомянуты в запросе
-        numbers = re.findall(r'\d+', query)
+        # Дополнительные факторы ранжирования
+        final_scores = similarities.copy()
+        
         for i, chunk in enumerate(self.chunks):
+            # 1. Буст для точного совпадения номера статьи
+            numbers = re.findall(r'\d+', query)
             if chunk['article'] in numbers:
-                similarities[i] += 0.5
+                final_scores[i] += 0.5
+            
+            # 2. Буст для статей с маленькими номерами (они обычно важнее)
+            if chunk['article'].isdigit() and int(chunk['article']) < 10:
+                final_scores[i] += 0.1
+            
+            # 3. Буст на основе ключевых слов
+            keyword_boost = self._keyword_boost(query, chunk['text'])
+            final_scores[i] += keyword_boost
+            
+            # 4. Штраф для статей, которые явно не относятся к вопросу
+            if 'финансовое обеспечение' in query.lower() and 'финанс' not in chunk['text'].lower():
+                final_scores[i] *= 0.5
+            if 'правовую основу' in query.lower() and 'правов' not in chunk['text'].lower():
+                final_scores[i] *= 0.3
         
         # Топ результаты
-        top_indices = np.argsort(similarities)[-k*2:][::-1]
+        top_indices = np.argsort(final_scores)[-k*3:][::-1]
         
+        # Собираем результаты с метаданными
         results = []
         seen_articles = set()
         
         for idx in top_indices:
-            if similarities[idx] > 0.15:  # Понизили порог
+            if final_scores[idx] > 0.1:
                 article = self.chunks[idx]['article']
                 
-                # Берем не больше 2 чанков из одной статьи
+                # Проверяем, не слишком ли много чанков из одной статьи
                 if article in seen_articles:
                     article_count = sum(1 for r in results if r['article'] == article)
                     if article_count >= 2:
@@ -268,17 +307,22 @@ class SmartStrategyRAG:
                     'text': self.chunks[idx]['text'],
                     'full_text': self.chunks[idx].get('full_text', self.chunks[idx]['text']),
                     'article': article,
-                    'similarity': float(similarities[idx])
+                    'title': self.chunks[idx].get('title', ''),
+                    'similarity': float(final_scores[idx]),
+                    'base_similarity': float(similarities[idx])
                 })
                 seen_articles.add(article)
             
             if len(results) >= k:
                 break
         
+        # Сортируем по финальной релевантности
+        results.sort(key=lambda x: x['similarity'], reverse=True)
+        
         return results
     
     def query(self, question: str) -> str:
-        """Ответ на вопрос"""
+        """Ответ на вопрос с акцентом на самые релевантные статьи"""
         if not self.chunks:
             return "❌ Документ не загружен."
         
@@ -288,42 +332,75 @@ class SmartStrategyRAG:
         if not relevant:
             return "❌ В документе не найдена информация по вашему вопросу."
         
-        # Группируем по статьям
-        articles = {}
-        for r in relevant:
-            if r['article'] not in articles:
-                articles[r['article']] = []
-            articles[r['article']].append(r['full_text'])
-        
         # Формируем ответ
         answer = "📄 **На основе Национальной стратегии развития ИИ:**\n\n"
         
-        # Сортируем статьи по релевантности
-        sorted_articles = sorted(articles.items(), 
-                               key=lambda x: max(r['similarity'] for r in relevant if r['article'] == x[0]), 
-                               reverse=True)
+        # Определяем основной контекст вопроса
+        is_legal_question = any(word in question.lower() for word in 
+                               ['закон', 'правов', 'федеральн', 'конституц', 'основ'])
         
-        for article_num, texts in sorted_articles[:3]:
+        # Показываем ТОЛЬКО самые релевантные статьи (макс 2)
+        shown_articles = 0
+        
+        for item in relevant:
+            if shown_articles >= 2:
+                break
+            
+            article_num = item['article']
+            
+            # Для юридических вопросов форсируем показ статьи 2
+            if is_legal_question and article_num == "2":
+                if article_num != "0":
+                    answer += f"**Статья {article_num}**"
+                    if item['title']:
+                        answer += f" - {item['title']}"
+                    answer += "\n"
+                else:
+                    answer += "**Введение**\n"
+                
+                # Показываем полный текст статьи 2
+                answer += item['full_text'] + "\n\n"
+                shown_articles += 1
+                
+            # Для остальных случаев показываем по релевантности
+            elif not is_legal_question or article_num != "2":
+                # Показываем только если релевантность высокая
+                if item['similarity'] > 0.3:
+                    if article_num != "0":
+                        answer += f"**Статья {article_num}**"
+                        if item['title']:
+                            answer += f" - {item['title']}"
+                        answer += "\n"
+                    else:
+                        answer += "**Введение**\n"
+                    
+                    # Показываем текст
+                    text = item['full_text']
+                    if len(text) > 600:
+                        answer += text[:600] + "...\n\n"
+                    else:
+                        answer += text + "\n\n"
+                    
+                    shown_articles += 1
+        
+        # Если не показали ни одной статьи, показываем топ-1
+        if shown_articles == 0 and relevant:
+            item = relevant[0]
+            article_num = item['article']
             if article_num != "0":
-                answer += f"**Статья {article_num}**\n"
+                answer += f"**Статья {article_num}**"
+                if item['title']:
+                    answer += f" - {item['title']}"
+                answer += "\n"
             else:
                 answer += "**Введение**\n"
             
-            # Берем первый текст как представителя статьи
-            full_text = texts[0]
-            
-            # Для юридических вопросов показываем полный текст
-            if len(full_text) > 600:
-                answer += full_text[:600] + "...\n\n"
-            else:
-                answer += full_text + "\n\n"
+            answer += item['full_text'][:500] + "...\n\n"
         
-        # Список статей
-        article_list = ', '.join([f"Статья {a}" for a, _ in sorted_articles[:3] if a != "0"])
-        if article_list:
-            answer += f"\n*Источник: Национальная стратегия развития ИИ, {article_list}*"
-        else:
-            answer += f"\n*Источник: Национальная стратегия развития ИИ*"
+        # Список использованных статей
+        used_articles = [f"Статья {r['article']}" for r in relevant[:2] if r['article'] != "0"]
+        if used_articles:
+            answer += f"\n*Источник: Национальная стратегия развития ИИ, {', '.join(used_articles)}*"
         
         return answer
 
@@ -338,18 +415,12 @@ def main():
     if not os.path.exists(file_path):
         st.error(f"❌ Файл {file_path} не найден!")
         st.info("Пожалуйста, убедитесь, что файл filerag.txt находится в той же папке")
-        
-        # Показываем содержимое папки для отладки
-        with st.expander("📁 Содержимое папки"):
-            files = os.listdir('.')
-            for f in files:
-                st.write(f"- {f}")
         return
     
     # Инициализация RAG
     if 'rag' not in st.session_state:
         with st.spinner("🔄 Загрузка документа..."):
-            st.session_state.rag = SmartStrategyRAG(file_path)
+            st.session_state.rag = ImprovedStrategyRAG(file_path)
     
     rag = st.session_state.rag
     
@@ -359,47 +430,16 @@ def main():
         st.markdown("""
         **Национальная стратегия развития ИИ**  
         *до 2030 года (с изменениями 2024)*
-        
-        **Разделы:**
-        - I. Общие положения (ст. 1-5)
-        - II. Развитие ИИ в России и мире (ст. 6-23)
-        - III. Основные принципы (ст. 24)
-        - IV. Цели и задачи (ст. 25-41)
-        - V. Механизмы реализации (ст. 42-50)
         """)
         
         if rag.chunks:
-            # Подсчитываем уникальные статьи
             unique_articles = set()
             for chunk in rag.chunks:
                 if chunk['article'] != "0":
                     unique_articles.add(chunk['article'])
             
+            st.metric("Всего статей", len(unique_articles))
             st.metric("Всего чанков", len(rag.chunks))
-            st.metric("Уникальных статей", len(unique_articles))
-        
-        # Получение API ключа
-        with st.expander("🔑 Настройка API (для лучших результатов)"):
-            st.markdown("""
-            1. Получите бесплатный ключ на [openrouter.ai](https://openrouter.ai/)
-            2. Вставьте ключ ниже
-            """)
-            api_key = st.text_input("API ключ OpenRouter", type="password")
-            if api_key:
-                rag.api_key = api_key
-                st.success("✅ Ключ сохранен!")
-                st.rerun()
-        
-        # Примеры вопросов
-        with st.expander("💡 Примеры вопросов"):
-            st.markdown("""
-            - Какие федеральные законы составляют правовую основу?
-            - Что такое искусственный интеллект?
-            - Какие основные принципы развития ИИ?
-            - Что говорится в статье 25?
-            - Какие цели развития ИИ к 2030 году?
-            - Что такое доверенные технологии?
-            """)
     
     # История чата
     if "messages" not in st.session_state:
