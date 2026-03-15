@@ -7,7 +7,6 @@ import os
 import streamlit as st
 import numpy as np
 from pathlib import Path
-import hashlib
 import json
 import requests
 from typing import List, Dict, Optional
@@ -221,8 +220,6 @@ class ProfessionalRAG:
                 return 0
             
             # Добавляем в хранилище
-            start_idx = len(self.chunks)
-            
             for chunk in valid_chunks:
                 self.chunks.append(chunk['text'])
                 self.sources.append(chunk['source'])
@@ -547,7 +544,15 @@ def main():
         st.subheader("ℹ️ Информация")
         
         with st.expander("📌 Как улучшить качество"):
-            st.markdown("""
-            **Рекомендации:**
-            
-            1. **Установите лучшие модели:**
+            st.markdown("**Рекомендации:**\n\n1. **Установите лучшие модели:**\n```\nollama pull mxbai-embed-large\nollama pull gemma2:2b\nollama pull llama3.2:3b\n```\n\n2. **Качество документов:**\n- Используйте чистый текст\n- Удалите мусор\n- Разбивайте на логические части\n\n3. **Настройки поиска:**\n- 3-5 чанков оптимально\n- Включите показ оценок для отладки")
+        
+        with st.expander("💡 Примеры вопросов"):
+            st.markdown("**Хорошие вопросы:**\n- \"Что такое RAG система?\"\n- \"Какие преимущества у гибридного поиска?\"\n- \"Как уменьшить галлюцинации?\"\n\n**Плохие вопросы:**\n- \"Что там?\" (слишком общий)\n- \"Расскажи всё\" (неконкретный)")
+        
+        # Кнопка очистки истории
+        if st.button("🗑️ Очистить историю"):
+            st.session_state.messages = []
+            st.rerun()
+
+if __name__ == "__main__":
+    main()
