@@ -1,6 +1,5 @@
 """
-RAG чат с HuggingFace API - ИСПРАВЛЕНО
-Гарантированно работает с вашим ключом
+RAG чат с HuggingFace API 
 """
 
 import streamlit as st
@@ -11,14 +10,13 @@ import re
 import time
 from typing import List, Dict, Any
 
-# Настройка страницы
+
 st.set_page_config(
     page_title="Национальная стратегия ИИ",
     page_icon="📄",
     layout="centered"
 )
 
-# Скрываем лишние элементы
 hide_streamlit_style = """
 <style>
     #MainMenu {visibility: hidden;}
@@ -42,7 +40,7 @@ hide_streamlit_style = """
 """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-# === ВАШ HUGGINGFACE API КЛЮЧ ===
+# === API КЛЮЧ ===
 HUGGINGFACE_API_KEY = "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"
 # ===============================
 
@@ -56,10 +54,10 @@ class FixedRAG:
         self.api_key = HUGGINGFACE_API_KEY
         self.use_api = False  # По умолчанию используем локальный режим
         
-        # Проверяем API ключ
+      
         self._check_api()
         
-        # Загружаем документ
+       
         self._load_document()
     
     def _check_api(self):
@@ -69,7 +67,7 @@ class FixedRAG:
             return
         
         try:
-            # Простой тестовый запрос
+           
             response = requests.post(
                 "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2",
                 headers={"Authorization": f"Bearer {self.api_key}"},
@@ -82,7 +80,6 @@ class FixedRAG:
                 st.sidebar.success("✅ HuggingFace API работает!")
             elif response.status_code == 402:
                 st.sidebar.info("⏳ Модель загружается на сервере... Использую локальный режим сейчас, API подключится позже.")
-                # Всё равно пробуем использовать API - он заработает через минуту
                 self.use_api = True
             else:
                 st.sidebar.warning(f"⚠️ Ошибка API. Использую локальный режим.")
@@ -118,14 +115,12 @@ class FixedRAG:
                         time.sleep(1)
                         continue
         
-        # Локальный режим - всегда работает
         return self._local_embedding(text)
     
     def _local_embedding(self, text: str) -> List[float]:
         """Локальные эмбеддинги (всегда работают)"""
         words = text.lower().split()
         
-        # Веса для ключевых терминов
         important_terms = {
             'искусственный интеллект': 3.0,
             'федеральный закон': 3.0,
@@ -159,7 +154,6 @@ class FixedRAG:
             with open(self.file_path, 'r', encoding='utf-8') as f:
                 text = f.read()
             
-            # Разбиваем по статьям
             lines = text.split('\n')
             current_article = ""
             current_num = ""
@@ -177,7 +171,6 @@ class FixedRAG:
             if current_num and current_article:
                 self.articles[current_num] = current_article.strip()
             
-            # Прогресс для эмбеддингов
             progress_bar = st.progress(0)
             status_text = st.empty()
             
@@ -214,13 +207,11 @@ class FixedRAG:
         
         query_emb = self._get_embedding(query)
         
-        # Вычисляем сходство
         similarities = []
         for num, emb in self.embeddings.items():
             sim = self._cosine_similarity(emb, query_emb)
             similarities.append((num, sim))
         
-        # Сортируем по убыванию
         similarities.sort(key=lambda x: x[1], reverse=True)
         
         return similarities[:3]
@@ -230,7 +221,6 @@ class FixedRAG:
         if not self.articles:
             return "❌ Документ не загружен."
         
-        # Поиск релевантных статей
         results = self.search(question)
         
         if not results:
@@ -238,25 +228,21 @@ class FixedRAG:
         
         question_lower = question.lower()
         
-        # Определяем тип вопроса
         is_legal = any(word in question_lower for word in ['закон', 'правов', 'федеральн', 'конституц', 'основ'])
         is_definition = any(word in question_lower for word in ['что такое', 'определение', 'понятие'])
         
         answer = "📄 **Национальная стратегия развития ИИ**\n\n"
         shown_articles = []
         
-        # Приоритет для статьи 2
         if is_legal and '2' in self.articles:
             answer += "### Статья 2 - Правовая основа\n\n"
             answer += f'<div class="legal-box">{self.articles["2"]}</div>\n\n'
             shown_articles.append('2')
         
-        # Приоритет для статьи 5
         elif is_definition and '5' in self.articles:
             answer += "### Статья 5 - Основные понятия\n\n"
             article_5 = self.articles['5']
             
-            # Извлекаем определение ИИ
             match = re.search(r'а\)\s+искусственный интеллект[^.]+\.[^.]+\.[^.]+\.[^.]*', article_5, re.IGNORECASE)
             if match:
                 answer += match.group(0) + "\n\n"
@@ -265,7 +251,6 @@ class FixedRAG:
             
             shown_articles.append('5')
         
-        # Показываем другие релевантные статьи
         for num, sim in results:
             if num not in shown_articles and len(shown_articles) < 2:
                 answer += f"### Статья {num}\n\n"
@@ -278,7 +263,6 @@ class FixedRAG:
                 
                 shown_articles.append(num)
         
-        # Источники
         if shown_articles:
             answer += f"\n---\n*Источники: Статьи {', '.join(shown_articles)}*"
         
@@ -291,7 +275,6 @@ def main():
     with st.sidebar:
         st.header("🔑 Статус API")
         
-        # Информация о ключе
         if HUGGINGFACE_API_KEY.startswith('hf_'):
             st.success("✅ Ключ загружен")
             
@@ -305,7 +288,6 @@ def main():
         
         st.markdown("---")
         
-        # Примеры вопросов
         st.markdown("**💡 Примеры вопросов:**")
         
         if st.button("📌 Какие федеральные законы?"):
@@ -317,30 +299,25 @@ def main():
         if st.button("📌 Статья 25"):
             st.session_state.prompt = "Что говорится в статье 25?"
     
-    # Путь к файлу
     file_path = "filerag.txt"
     
     if not os.path.exists(file_path):
         st.error(f"❌ Файл {file_path} не найден!")
         return
     
-    # Инициализация RAG
     if 'rag' not in st.session_state:
         with st.spinner("🔄 Загрузка документа..."):
             st.session_state.rag = FixedRAG(file_path)
     
     rag = st.session_state.rag
     
-    # Статистика
     with st.sidebar:
         st.metric("Загружено статей", len(rag.articles))
         st.metric("Режим", "API" if rag.use_api else "Локальный")
     
-    # История чата
     if "messages" not in st.session_state:
         st.session_state.messages = []
     
-    # Обработка预设 вопроса
     if "prompt" in st.session_state:
         prompt = st.session_state.prompt
         del st.session_state.prompt
@@ -356,12 +333,10 @@ def main():
         
         st.session_state.messages.append({"role": "assistant", "content": response})
     
-    # Отображение истории
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"], unsafe_allow_html=True)
     
-    # Ввод вопроса
     if prompt := st.chat_input("Задайте вопрос..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
