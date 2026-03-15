@@ -61,7 +61,7 @@ st.markdown("""
 
 # === СЕКРЕТНЫЙ КЛЮЧ (замените на свой!) ===
 HUGGINGFACE_API_KEY = st.secrets.get("HF_API_KEY", "your-secret-key-here")
-if HUGGINGFACE_API_KEY == "your-secret-key-here":
+if HUGGINGFACE_API_KEY == "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":
     st.error("⚠️ Добавьте HUGGINGFACE_API_KEY в Secrets!")
     st.stop()
 
