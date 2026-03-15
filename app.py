@@ -1,64 +1,139 @@
 """
-Минималистичный RAG чат - Только суть
-Чистый интерфейс, полные ответы, никакого шума
+Фокусированный RAG чат - Только на основе файла filerag.txt
+Никаких загрузок от пользователей, только ваш документ
 """
 
 import streamlit as st
 import numpy as np
-import requests
-from pathlib import Path
-import tempfile
 import os
+from pathlib import Path
 from typing import List, Dict
+import hashlib
 
-# Настройка страницы - МИНИМАЛИЗМ
+# Настройка страницы - минимализм
 st.set_page_config(
-    page_title="RAG Чат",
-    page_icon="💬",
-    layout="centered"  # Центрированный, не широкий
+    page_title="Национальная стратегия ИИ",
+    page_icon="📄",
+    layout="centered"
 )
 
-# Скрываем дефолтный Streamlit мусор
+# Скрываем лишние элементы Streamlit
 hide_streamlit_style = """
 <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
-    .stApp {margin-top: -80px;}
-    .stButton>button {width: 100%;}
+    .stApp {margin-top: -50px;}
+    .block-container {padding-top: 2rem;}
 </style>
 """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-class MinimalRAG:
-    """Минималистичная RAG система - только необходимое"""
+class StrategyRAG:
+    """RAG система только для одного документа - Национальной стратегии ИИ"""
     
-    def __init__(self):
+    def __init__(self, file_path: str):
+        self.file_path = file_path
         self.chunks = []
         self.embeddings = None
         self.sources = []
-        self.dim = 384
+        self.dim = 512  # Увеличил размерность для лучшей точности
         
-        # Пытаемся получить API ключ (опционально)
-        self.openrouter_key = st.secrets.get("OPENROUTER_API_KEY", None)
+        # Загружаем и обрабатываем документ при инициализации
+        self._load_document()
+    
+    def _smart_chunking(self, text: str) -> List[str]:
+        """
+        Умное разбиение на чанки по статьям и разделам документа
+        Сохраняет структуру документа
+        """
+        # Разбиваем по номерам статей (пунктов)
+        import re
+        
+        # Ищем все пункты (1., 2., 3., и т.д.)
+        chunks = []
+        
+        # Разделяем документ на логические блоки по пунктам
+        lines = text.split('\n')
+        current_chunk = ""
+        
+        for line in lines:
+            # Если строка начинается с цифры и точки (пункт документа)
+            if re.match(r'^\d+\.', line.strip()):
+                if current_chunk:
+                    chunks.append(current_chunk.strip())
+                current_chunk = line + "\n"
+            else:
+                current_chunk += line + "\n"
+        
+        # Добавляем последний чанк
+        if current_chunk:
+            chunks.append(current_chunk.strip())
+        
+        # Дополнительно разбиваем слишком большие чанки
+        final_chunks = []
+        for chunk in chunks:
+            if len(chunk) > 1000:  # Если чанк слишком большой
+                # Разбиваем на подчасти по 500 символов с перекрытием
+                words = chunk.split()
+                temp_chunk = ""
+                for word in words:
+                    if len(temp_chunk) + len(word) < 800:
+                        temp_chunk += word + " "
+                    else:
+                        if temp_chunk:
+                            final_chunks.append(temp_chunk.strip())
+                        temp_chunk = word + " "
+                if temp_chunk:
+                    final_chunks.append(temp_chunk.strip())
+            else:
+                final_chunks.append(chunk)
+        
+        return final_chunks
     
     def _get_embedding(self, text: str) -> List[float]:
-        """Улучшенный эмбеддинг с лучшей семантикой"""
+        """
+        Улучшенный эмбеддинг с учетом важных терминов
+        """
         words = text.lower().split()
         
-        # Используем не только униграммы, но и биграммы для лучшего контекста
+        # Словарь важных терминов для ИИ стратегии (веса для ключевых слов)
+        important_terms = {
+            'искусственный интеллект': 3.0,
+            'стратегия': 2.0,
+            'технологии': 1.5,
+            'развитие': 1.5,
+            'национальный': 1.5,
+            'федеральный': 1.5,
+            'правительство': 1.5,
+            'президент': 1.5,
+            'российская федерация': 2.0,
+            'данные': 1.5,
+            'безопасность': 1.5,
+            'этика': 1.5,
+            'цифровой': 1.5,
+            'экономика': 1.5
+        }
+        
         features = np.zeros(self.dim)
         
-        # Униграммы
-        for word in words[:200]:
+        # Униграммы с весами
+        for word in words:
             idx = abs(hash(word)) % self.dim
+            # Базовая частота
             features[idx] += 1
+            
+            # Проверяем, есть ли слово в важных терминах
+            for term, weight in important_terms.items():
+                if term in text.lower():
+                    term_idx = abs(hash(term)) % self.dim
+                    features[term_idx] += weight
         
-        # Биграммы (для лучшего понимания контекста)
+        # Биграммы для контекста
         for i in range(len(words)-1):
             bigram = words[i] + " " + words[i+1]
             idx = abs(hash(bigram)) % self.dim
-            features[idx] += 0.5  # Меньший вес для биграмм
+            features[idx] += 0.3
         
         # Нормализация
         norm = np.linalg.norm(features)
@@ -67,69 +142,40 @@ class MinimalRAG:
         
         return features.tolist()
     
-    def add_document(self, text: str, source: str = "документ"):
-        """Добавление документа с умным чанкингом"""
-        # Разбиваем на предложения, потом собираем в чанки
-        sentences = text.replace('!', '.').replace('?', '.').split('.')
-        
-        chunks = []
-        current_chunk = ""
-        
-        for sentence in sentences:
-            sentence = sentence.strip()
-            if not sentence:
-                continue
+    def _load_document(self):
+        """Загрузка и обработка документа"""
+        try:
+            with open(self.file_path, 'r', encoding='utf-8') as f:
+                text = f.read()
             
-            # Если предложение большое, разбиваем его
-            if len(sentence) > 300:
-                words = sentence.split()
-                temp_chunk = ""
-                for word in words:
-                    if len(temp_chunk) + len(word) < 300:
-                        temp_chunk += word + " "
-                    else:
-                        if temp_chunk:
-                            chunks.append(temp_chunk.strip())
-                        temp_chunk = word + " "
-                if temp_chunk:
-                    chunks.append(temp_chunk.strip())
-            else:
-                # Добавляем к текущему чанку
-                if len(current_chunk) + len(sentence) < 500:
-                    current_chunk += sentence + ". "
-                else:
-                    if current_chunk:
-                        chunks.append(current_chunk.strip())
-                    current_chunk = sentence + ". "
-        
-        if current_chunk:
-            chunks.append(current_chunk.strip())
-        
-        # Фильтруем пустые и слишком короткие чанки
-        chunks = [c for c in chunks if len(c) > 50]
-        
-        if not chunks:
-            return 0
-        
-        # Генерируем эмбеддинги
-        chunk_embeddings = []
-        for chunk in chunks:
-            embedding = self._get_embedding(chunk)
-            chunk_embeddings.append(embedding)
-        
-        # Сохраняем
-        self.chunks.extend(chunks)
-        self.sources.extend([source] * len(chunks))
-        
-        if self.embeddings is None:
-            self.embeddings = np.array(chunk_embeddings)
-        else:
-            self.embeddings = np.vstack([self.embeddings, np.array(chunk_embeddings)])
-        
-        return len(chunks)
+            # Умное разбиение на чанки
+            chunks = self._smart_chunking(text)
+            
+            if not chunks:
+                st.error("❌ Не удалось создать чанки из документа")
+                return
+            
+            # Генерация эмбеддингов
+            with st.spinner("🔄 Обработка документа..."):
+                chunk_embeddings = []
+                for chunk in chunks:
+                    embedding = self._get_embedding(chunk)
+                    chunk_embeddings.append(embedding)
+                
+                # Сохраняем чанки и эмбеддинги
+                self.chunks = chunks
+                self.sources = ["Национальная стратегия ИИ"] * len(chunks)
+                self.embeddings = np.array(chunk_embeddings)
+                
+                st.sidebar.success(f"✅ Документ загружен: {len(chunks)} чанков")
+                
+        except Exception as e:
+            st.error(f"❌ Ошибка загрузки документа: {e}")
     
-    def search(self, query: str, k: int = 3) -> List[Dict]:
-        """Поиск с реранкингом для лучшей точности"""
+    def search(self, query: str, k: int = 5) -> List[Dict]:
+        """
+        Поиск релевантных чанков с порогом релевантности
+        """
         if not self.chunks:
             return []
         
@@ -144,150 +190,169 @@ class MinimalRAG:
         else:
             similarities = np.zeros(len(self.chunks))
         
-        # Дополнительный реранкинг по ключевым словам
-        query_words = set(query.lower().split())
-        keyword_scores = []
+        # Усиление для чанков с номерами статей (прямые ссылки)
+        for i, chunk in enumerate(self.chunks):
+            # Если в чанке есть номер статьи, который совпадает с числом в запросе
+            numbers = re.findall(r'\d+', query)
+            for num in numbers:
+                if num in chunk[:50]:  # Проверяем начало чанка
+                    similarities[i] += 0.2
         
-        for chunk in self.chunks:
-            chunk_words = set(chunk.lower().split())
-            overlap = len(query_words & chunk_words) / max(len(query_words), 1)
-            keyword_scores.append(overlap * 0.3)  # 30% вес
-        
-        # Финальные оценки
-        final_scores = similarities + np.array(keyword_scores)
-        
-        # Топ результаты
-        top_indices = np.argsort(final_scores)[-k:][::-1]
+        # Получаем топ результаты выше порога
+        top_indices = np.argsort(similarities)[-k*2:][::-1]
         
         results = []
+        seen_content = set()
+        
         for idx in top_indices:
-            if final_scores[idx] > 0.1:  # Минимальный порог
-                results.append({
-                    'text': self.chunks[idx],
-                    'source': self.sources[idx],
-                    'score': float(final_scores[idx])
-                })
+            if similarities[idx] > 0.15:  # Порог релевантности
+                # Дедупликация похожего контента
+                chunk_preview = self.chunks[idx][:100]
+                if chunk_preview not in seen_content:
+                    results.append({
+                        'text': self.chunks[idx],
+                        'source': self.sources[idx],
+                        'similarity': float(similarities[idx]),
+                        'article_num': self._extract_article_number(self.chunks[idx])
+                    })
+                    seen_content.add(chunk_preview)
+            
+            if len(results) >= k:
+                break
         
         return results
     
+    def _extract_article_number(self, text: str) -> str:
+        """Извлечение номера статьи из текста"""
+        import re
+        match = re.match(r'^(\d+)\.', text.strip())
+        if match:
+            return f"Статья {match.group(1)}"
+        return ""
+    
     def generate_answer(self, question: str, context: List[Dict]) -> str:
-        """Генерация ПОЛНОГО ответа без обрезания"""
+        """
+        Генерация структурированного ответа на основе найденного контекста
+        """
         if not context:
-            return "❌ Информация не найдена."
+            return "❌ В документе не найдена информация по вашему вопросу."
         
-        # Собираем ВЕСЬ релевантный контекст
-        full_context = "\n\n".join([c['text'] for c in context])
+        # Сортируем по релевантности
+        context.sort(key=lambda x: x['similarity'], reverse=True)
         
-        # Если есть OpenRouter, используем его для лучших ответов
-        if self.openrouter_key:
-            try:
-                prompt = f"""Контекст: {full_context}
-
-Вопрос: {question}
-
-Дай полный, развернутый ответ на русском языке, используя только информацию из контекста.
-Не обрезай ответ, пиши все детали."""
-
-                response = requests.post(
-                    "https://openrouter.ai/api/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {self.openrouter_key}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model": "mistralai/mistral-7b-instruct:free",
-                        "messages": [{"role": "user", "content": prompt}],
-                        "temperature": 0.2,
-                        "max_tokens": 1000  # Увеличиваем лимит
-                    },
-                    timeout=30
-                )
+        # Формируем ответ
+        answer = "📄 **На основе Национальной стратегии развития ИИ:**\n\n"
+        
+        # Добавляем самые релевантные части
+        used_articles = set()
+        
+        for item in context[:3]:  # Берем топ-3
+            article_num = self._extract_article_number(item['text'])
+            
+            if article_num and article_num not in used_articles:
+                answer += f"**{article_num}**\n"
+                used_articles.add(article_num)
+            
+            # Извлекаем основное содержание
+            text = item['text']
+            
+            # Если текст слишком длинный, показываем релевантную часть
+            if len(text) > 500:
+                # Пытаемся найти предложения с ключевыми словами из вопроса
+                sentences = text.replace('!', '.').replace('?', '.').split('.')
+                question_words = set(question.lower().split())
                 
-                if response.status_code == 200:
-                    return response.json()['choices'][0]['message']['content']
-            except:
-                pass  # Если API не работает, используем fallback
+                relevant_sentences = []
+                for sent in sentences:
+                    sent = sent.strip()
+                    if not sent:
+                        continue
+                    sent_words = set(sent.lower().split())
+                    if len(question_words & sent_words) > 1:
+                        relevant_sentences.append(sent)
+                
+                if relevant_sentences:
+                    answer += ". ".join(relevant_sentences[:2]) + ".\n\n"
+                else:
+                    # Если не нашли специфичных предложений, показываем начало
+                    answer += text[:300] + "...\n\n"
+            else:
+                answer += text + "\n\n"
         
-        # Fallback: собираем полный контекст
-        answer = "📄 **На основе документов:**\n\n"
-        
-        # Группируем по источникам для лучшей читаемости
-        sources_dict = {}
-        for item in context:
-            if item['source'] not in sources_dict:
-                sources_dict[item['source']] = []
-            sources_dict[item['source']].append(item['text'])
-        
-        for source, texts in sources_dict.items():
-            answer += f"**{source}:**\n"
-            for text in texts:
-                # Добавляем текст ПОЛНОСТЬЮ, не обрезаем
-                answer += f"{text}\n\n"
+        # Добавляем ссылки на статьи
+        if used_articles:
+            answer += f"\n*Источник: Национальная стратегия развития ИИ, {', '.join(used_articles)}*"
         
         return answer
+    
+    def query(self, question: str) -> str:
+        """Полный цикл RAG"""
+        if not self.chunks:
+            return "❌ Документ не загружен."
+        
+        # Поиск релевантных чанков
+        relevant = self.search(question, k=5)
+        
+        if not relevant:
+            return "❌ В документе не найдена информация по вашему вопросу."
+        
+        # Генерация ответа
+        return self.generate_answer(question, relevant)
 
 def main():
-    # Заголовок - минимально
-    st.title("💬 Чат с документами")
+    st.title("📄 Национальная стратегия развития ИИ")
+    st.markdown("*Чат на основе официального документа (с изменениями 2024 г.)*")
     
-    # Инициализация
+    # Путь к вашему файлу (должен быть в той же папке, что и app.py)
+    file_path = "filerag.txt"
+    
+    # Проверяем существование файла
+    if not os.path.exists(file_path):
+        st.error(f"❌ Файл {file_path} не найден!")
+        st.info("Пожалуйста, убедитесь, что файл filerag.txt находится в той же папке, что и app.py")
+        
+        # Показываем содержимое папки для отладки
+        st.write("Файлы в текущей папке:")
+        for f in os.listdir('.'):
+            st.write(f"- {f}")
+        return
+    
+    # Инициализация RAG
     if 'rag' not in st.session_state:
-        st.session_state.rag = MinimalRAG()
-    
-    if 'messages' not in st.session_state:
-        st.session_state.messages = []
+        st.session_state.rag = StrategyRAG(file_path)
     
     rag = st.session_state.rag
     
-    # Минимальный сайдбар
+    # Сайдбар с информацией о документе
     with st.sidebar:
-        st.markdown("### 📁 Загрузка")
+        st.header("📚 О документе")
+        st.markdown("""
+        **Национальная стратегия развития ИИ**  
+        *до 2030 года (с изменениями 2024)*
         
-        uploaded_file = st.file_uploader(
-            "Выберите файл",
-            type=['txt'],
-            label_visibility="collapsed"
-        )
+        **Структура документа:**
+        - I. Общие положения (ст. 1-5)
+        - II. Развитие ИИ в России и мире (ст. 6-23)
+        - III. Основные принципы (ст. 24)
+        - IV. Цели и задачи (ст. 25-41)
+        - V. Механизмы реализации (ст. 42-50)
+        """)
         
-        if uploaded_file:
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.txt', mode='w', encoding='utf-8') as f:
-                content = uploaded_file.read().decode('utf-8', errors='ignore')
-                f.write(content)
-                count = rag.add_document(content, source=uploaded_file.name)
-                os.unlink(f.name)
-            
-            if count > 0:
-                st.success(f"✅ Загружено: {uploaded_file.name}")
-                st.rerun()
-        
-        if st.button("📝 Пример документа"):
-            sample = """Стратегия развития искусственного интеллекта в России определяет основные направления развития технологий ИИ до 2030 года.
-
-Правовую основу настоящей Стратегии составляют Конституция Российской Федерации, федеральные законы от 27 июля 2006 г. № 149-ФЗ "Об информации, информационных технологиях и о защите информации" и от 27 июля 2006 г. № 152-ФЗ "О персональных данных".
-
-Основными источниками финансового обеспечения реализации настоящей Стратегии являются средства федерального бюджета, бюджетов субъектов Российской Федерации, а также внебюджетные источники.
-
-В целях аналитической поддержки реализации настоящей Стратегии проводятся научные исследования, направленные на прогнозирование развития технологий искусственного интеллекта и оценку эффективности внедрения таких технологий в различные отрасли экономики.
-
-Ключевыми направлениями развития ИИ в России являются: компьютерное зрение, обработка естественного языка, распознавание и синтез речи, рекомендательные системы и системы поддержки принятия решений."""
-            
-            rag.add_document(sample, source="стратегия.txt")
-            st.success("✅ Пример загружен")
-            st.rerun()
-        
-        # Минимальная статистика
         if rag.chunks:
-            st.markdown("---")
-            st.markdown(f"📊 **{len(rag.chunks)}** чанков")
-            st.markdown(f"📚 **{len(set(rag.sources))}** документов")
+            st.metric("Всего чанков", len(rag.chunks))
+            st.metric("Размер эмбеддингов", f"{rag.embeddings.shape[1]}d")
     
-    # Отображение истории чата
+    # История чата
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    
+    # Отображение истории
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
     
     # Ввод вопроса
-    if prompt := st.chat_input("Задайте вопрос..."):
+    if prompt := st.chat_input("Задайте вопрос о стратегии развития ИИ..."):
         # Добавляем вопрос
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
@@ -295,16 +360,8 @@ def main():
         
         # Получаем ответ
         with st.chat_message("assistant"):
-            with st.spinner("🔍 Поиск..."):
-                # Ищем релевантные чанки
-                relevant = rag.search(prompt, k=5)
-                
-                if not relevant:
-                    response = "❌ Информация не найдена."
-                else:
-                    # Генерируем полный ответ
-                    response = rag.generate_answer(prompt, relevant)
-                
+            with st.spinner("🔍 Ищу в документе..."):
+                response = rag.query(prompt)
                 st.markdown(response)
         
         st.session_state.messages.append({"role": "assistant", "content": response})
