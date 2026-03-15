@@ -19,7 +19,7 @@ st.set_page_config(
     layout="centered"
 )
 
-# Минимальные стили
+# Минимальные стил
 st.markdown("""
 <style>
     #MainMenu {visibility: hidden;}
