@@ -1,3 +1,4 @@
+curl -fsSL https://ollama.com/install.sh | sh
 """
 Профессиональная RAG система с реальными эмбеддингами и LLM
 Запуск: streamlit run app.py
