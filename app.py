@@ -1,24 +1,24 @@
 """
-Фокусированный RAG чат - Только на основе файла filerag.txt
-Никаких загрузок от пользователей, только ваш документ
+Фокусированный RAG чат с реальными эмбеддингами через OpenRouter
+Только на основе файла filerag.txt
 """
 
 import streamlit as st
 import numpy as np
 import os
-from pathlib import Path
+import requests
+import json
+import re
 from typing import List, Dict
-import hashlib
-import re  # 👈 ЭТОТ ИМПОРТ БЫЛ ОТСУТСТВОВАТЬ
 
-# Настройка страницы - минимализм
+# Настройка страницы
 st.set_page_config(
     page_title="Национальная стратегия ИИ",
     page_icon="📄",
     layout="centered"
 )
 
-# Скрываем лишние элементы Streamlit
+# Скрываем лишние элементы
 hide_streamlit_style = """
 <style>
     #MainMenu {visibility: hidden;}
@@ -30,110 +30,78 @@ hide_streamlit_style = """
 """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-class StrategyRAG:
-    """RAG система только для одного документа - Национальной стратегии ИИ"""
+class SmartStrategyRAG:
+    """RAG с реальными эмбеддингами через OpenRouter API"""
     
-    def __init__(self, file_path: str):
+    def __init__(self, file_path: str, api_key: str = None):
         self.file_path = file_path
         self.chunks = []
         self.embeddings = None
         self.sources = []
-        self.dim = 512  # Увеличил размерность для лучшей точности
         
-        # Загружаем и обрабатываем документ при инициализации
+        # API ключ (можно получить бесплатно на openrouter.ai)
+        self.api_key = api_key or st.secrets.get("OPENROUTER_API_KEY", None)
+        
+        if not self.api_key:
+            st.warning("⚠️ API ключ не найден. Работа будет в ограниченном режиме.")
+        
+        # Загружаем документ
         self._load_document()
     
-    def _smart_chunking(self, text: str) -> List[str]:
-        """
-        Умное разбиение на чанки по статьям и разделам документа
-        Сохраняет структуру документа
-        """
-        # Разбиваем по номерам статей (пунктов)
-        
-        # Ищем все пункты (1., 2., 3., и т.д.)
-        chunks = []
-        
-        # Разделяем документ на логические блоки по пунктам
-        lines = text.split('\n')
-        current_chunk = ""
-        
-        for line in lines:
-            # Если строка начинается с цифры и точки (пункт документа)
-            if re.match(r'^\d+\.', line.strip()):
-                if current_chunk:
-                    chunks.append(current_chunk.strip())
-                current_chunk = line + "\n"
-            else:
-                current_chunk += line + "\n"
-        
-        # Добавляем последний чанк
-        if current_chunk:
-            chunks.append(current_chunk.strip())
-        
-        # Дополнительно разбиваем слишком большие чанки
-        final_chunks = []
-        for chunk in chunks:
-            if len(chunk) > 1000:  # Если чанк слишком большой
-                # Разбиваем на подчасти по 500 символов с перекрытием
-                words = chunk.split()
-                temp_chunk = ""
-                for word in words:
-                    if len(temp_chunk) + len(word) < 800:
-                        temp_chunk += word + " "
-                    else:
-                        if temp_chunk:
-                            final_chunks.append(temp_chunk.strip())
-                        temp_chunk = word + " "
-                if temp_chunk:
-                    final_chunks.append(temp_chunk.strip())
-            else:
-                final_chunks.append(chunk)
-        
-        return final_chunks
-    
     def _get_embedding(self, text: str) -> List[float]:
-        """
-        Улучшенный эмбеддинг с учетом важных терминов
-        """
+        """Получение реальных эмбеддингов через OpenRouter API"""
+        if not self.api_key:
+            # Улучшенный fallback с учетом контекста
+            return self._get_fallback_embedding(text)
+        
+        try:
+            response = requests.post(
+                "https://openrouter.ai/api/v1/embeddings",
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "sentence-transformers/all-mpnet-base-v2",
+                    "input": text[:1000]  # Ограничиваем длину
+                },
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                return response.json()['data'][0]['embedding']
+            else:
+                return self._get_fallback_embedding(text)
+                
+        except Exception:
+            return self._get_fallback_embedding(text)
+    
+    def _get_fallback_embedding(self, text: str) -> List[float]:
+        """Улучшенный fallback с учетом важности слов"""
         words = text.lower().split()
         
-        # Словарь важных терминов для ИИ стратегии (веса для ключевых слов)
-        important_terms = {
-            'искусственный интеллект': 3.0,
-            'стратегия': 2.0,
-            'технологии': 1.5,
-            'развитие': 1.5,
-            'национальный': 1.5,
-            'федеральный': 1.5,
-            'правительство': 1.5,
-            'президент': 1.5,
-            'российская федерация': 2.0,
-            'данные': 1.5,
-            'безопасность': 1.5,
-            'этика': 1.5,
-            'цифровой': 1.5,
-            'экономика': 1.5
+        # Важные термины для юридических документов
+        legal_terms = {
+            'федеральный закон': 3.0,
+            'конституция': 3.0,
+            'статья': 2.5,
+            'правовой': 2.0,
+            'регулирование': 2.0,
+            'нормативный': 2.0
         }
         
-        features = np.zeros(self.dim)
+        dim = 768  # Стандартная размерность для эмбеддингов
+        features = np.zeros(dim)
         
-        # Униграммы с весами
         for word in words:
-            idx = abs(hash(word)) % self.dim
-            # Базовая частота
+            idx = abs(hash(word)) % dim
             features[idx] += 1
-            
-            # Проверяем, есть ли слово в важных терминах
-            for term, weight in important_terms.items():
-                if term in text.lower():
-                    term_idx = abs(hash(term)) % self.dim
-                    features[term_idx] += weight
         
-        # Биграммы для контекста
-        for i in range(len(words)-1):
-            bigram = words[i] + " " + words[i+1]
-            idx = abs(hash(bigram)) % self.dim
-            features[idx] += 0.3
+        # Усиление для юридических терминов
+        for term, weight in legal_terms.items():
+            if term in text.lower():
+                term_idx = abs(hash(term)) % dim
+                features[term_idx] += weight
         
         # Нормализация
         norm = np.linalg.norm(features)
@@ -142,47 +110,97 @@ class StrategyRAG:
         
         return features.tolist()
     
+    def _chunk_by_articles(self, text: str) -> List[Dict]:
+        """Разбиение документа по статьям с сохранением номеров"""
+        # Находим все статьи (пункты)
+        article_pattern = r'(\d+\.\s+[^\n]+(?:\n[^0-9][^\n]*)*)'
+        articles = re.findall(article_pattern, text, re.MULTILINE)
+        
+        chunks = []
+        for article in articles:
+            # Извлекаем номер статьи
+            article_num = re.match(r'(\d+)\.', article)
+            num = article_num.group(1) if article_num else "0"
+            
+            # Разбиваем длинные статьи на подчасти
+            if len(article) > 800:
+                sentences = article.replace('!', '.').replace('?', '.').split('.')
+                current_chunk = ""
+                for sent in sentences:
+                    if len(current_chunk) + len(sent) < 600:
+                        current_chunk += sent + ". "
+                    else:
+                        if current_chunk:
+                            chunks.append({
+                                'text': current_chunk.strip(),
+                                'article': num,
+                                'full_text': article
+                            })
+                        current_chunk = sent + ". "
+                if current_chunk:
+                    chunks.append({
+                        'text': current_chunk.strip(),
+                        'article': num,
+                        'full_text': article
+                    })
+            else:
+                chunks.append({
+                    'text': article.strip(),
+                    'article': num,
+                    'full_text': article
+                })
+        
+        return chunks
+    
     def _load_document(self):
         """Загрузка и обработка документа"""
         try:
             with open(self.file_path, 'r', encoding='utf-8') as f:
                 text = f.read()
             
-            # Умное разбиение на чанки
-            chunks = self._smart_chunking(text)
+            # Разбиваем на чанки по статьям
+            chunks = self._chunk_by_articles(text)
             
             if not chunks:
-                st.error("❌ Не удалось создать чанки из документа")
+                st.error("❌ Не удалось создать чанки")
                 return
             
-            # Генерация эмбеддингов
+            # Прогресс бар
             progress_bar = st.progress(0)
             status_text = st.empty()
             
+            # Генерируем эмбеддинги
+            chunk_texts = []
             chunk_embeddings = []
+            
             for i, chunk in enumerate(chunks):
                 status_text.text(f"Обработка чанка {i+1}/{len(chunks)}...")
-                embedding = self._get_embedding(chunk)
-                chunk_embeddings.append(embedding)
+                
+                chunk_texts.append({
+                    'text': chunk['text'],
+                    'article': chunk['article'],
+                    'full_text': chunk['full_text']
+                })
+                
+                emb = self._get_embedding(chunk['text'])
+                chunk_embeddings.append(emb)
+                
                 progress_bar.progress((i + 1) / len(chunks))
             
             progress_bar.empty()
             status_text.empty()
             
-            # Сохраняем чанки и эмбеддинги
-            self.chunks = chunks
-            self.sources = ["Национальная стратегия ИИ"] * len(chunks)
+            # Сохраняем
+            self.chunks = chunk_texts
             self.embeddings = np.array(chunk_embeddings)
             
-            st.sidebar.success(f"✅ Документ загружен: {len(chunks)} чанков")
-                
+            st.sidebar.success(f"✅ Загружено {len(chunks)} чанков из {len(set(c['article'] for c in chunk_texts))} статей")
+            
         except Exception as e:
-            st.error(f"❌ Ошибка загрузки документа: {e}")
+            st.error(f"❌ Ошибка: {e}")
     
     def search(self, query: str, k: int = 5) -> List[Dict]:
-        """
-        Поиск релевантных чанков с порогом релевантности
-        """
+        """Семантический поиск"""
         if not self.chunks:
             return []
         
@@ -197,103 +215,43 @@ class StrategyRAG:
         else:
             similarities = np.zeros(len(self.chunks))
         
-        # Усиление для чанков с номерами статей (прямые ссылки)
+        # Буст для статей, номера которых упомянуты в запросе
         numbers = re.findall(r'\d+', query)
         for i, chunk in enumerate(self.chunks):
-            for num in numbers:
-                if num in chunk[:50]:  # Проверяем начало чанка
-                    similarities[i] += 0.2
+            if chunk['article'] in numbers:
+                similarities[i] += 0.5
         
-        # Получаем топ результаты выше порога
+        # Топ результаты
         top_indices = np.argsort(similarities)[-k*2:][::-1]
         
         results = []
-        seen_content = set()
+        seen_articles = set()
         
         for idx in top_indices:
-            if similarities[idx] > 0.15:  # Порог релевантности
-                # Дедупликация похожего контента
-                chunk_preview = self.chunks[idx][:100]
-                if chunk_preview not in seen_content:
-                    results.append({
-                        'text': self.chunks[idx],
-                        'source': self.sources[idx],
-                        'similarity': float(similarities[idx]),
-                        'article_num': self._extract_article_number(self.chunks[idx])
-                    })
-                    seen_content.add(chunk_preview)
+            if similarities[idx] > 0.2:  # Порог релевантности
+                article = self.chunks[idx]['article']
+                
+                # Берем не больше 2 чанков из одной статьи
+                if article in seen_articles:
+                    article_count = sum(1 for r in results if r['article'] == article)
+                    if article_count >= 2:
+                        continue
+                
+                results.append({
+                    'text': self.chunks[idx]['text'],
+                    'full_text': self.chunks[idx]['full_text'],
+                    'article': article,
+                    'similarity': float(similarities[idx])
+                })
+                seen_articles.add(article)
             
             if len(results) >= k:
                 break
         
         return results
     
-    def _extract_article_number(self, text: str) -> str:
-        """Извлечение номера статьи из текста"""
-        match = re.match(r'^\s*(\d+)\.', text.strip())
-        if match:
-            return f"Статья {match.group(1)}"
-        return ""
-    
-    def generate_answer(self, question: str, context: List[Dict]) -> str:
-        """
-        Генерация структурированного ответа на основе найденного контекста
-        """
-        if not context:
-            return "❌ В документе не найдена информация по вашему вопросу."
-        
-        # Сортируем по релевантности
-        context.sort(key=lambda x: x['similarity'], reverse=True)
-        
-        # Формируем ответ
-        answer = "📄 **На основе Национальной стратегии развития ИИ:**\n\n"
-        
-        # Добавляем самые релевантные части
-        used_articles = set()
-        
-        for item in context[:3]:  # Берем топ-3
-            article_num = self._extract_article_number(item['text'])
-            
-            if article_num and article_num not in used_articles:
-                answer += f"**{article_num}**\n"
-                used_articles.add(article_num)
-            
-            # Извлекаем основное содержание
-            text = item['text']
-            
-            # Если текст слишком длинный, показываем релевантную часть
-            if len(text) > 500:
-                # Пытаемся найти предложения с ключевыми словами из вопроса
-                sentences = text.replace('!', '.').replace('?', '.').split('.')
-                question_words = set(question.lower().split())
-                
-                relevant_sentences = []
-                for sent in sentences:
-                    sent = sent.strip()
-                    if not sent:
-                        continue
-                    sent_words = set(sent.lower().split())
-                    if len(question_words & sent_words) > 1:
-                        relevant_sentences.append(sent)
-                
-                if relevant_sentences:
-                    answer += ". ".join(relevant_sentences[:2]) + ".\n\n"
-                else:
-                    # Если не нашли специфичных предложений, показываем начало
-                    answer += text[:300] + "...\n\n"
-            else:
-                answer += text + "\n\n"
-        
-        # Добавляем ссылки на статьи
-        if used_articles:
-            answer += f"\n*Источник: Национальная стратегия развития ИИ, {', '.join(used_articles)}*"
-        else:
-            answer += f"\n*Источник: Национальная стратегия развития ИИ*"
-        
-        return answer
-    
     def query(self, question: str) -> str:
-        """Полный цикл RAG"""
+        """Ответ на вопрос"""
         if not self.chunks:
             return "❌ Документ не загружен."
         
@@ -303,41 +261,74 @@ class StrategyRAG:
         if not relevant:
             return "❌ В документе не найдена информация по вашему вопросу."
         
-        # Генерация ответа
-        return self.generate_answer(question, relevant)
+        # Группируем по статьям
+        articles = {}
+        for r in relevant:
+            if r['article'] not in articles:
+                articles[r['article']] = []
+            articles[r['article']].append(r['full_text'])
+        
+        # Формируем ответ
+        answer = "📄 **На основе Национальной стратегии развития ИИ:**\n\n"
+        
+        # Сортируем статьи по релевантности
+        sorted_articles = sorted(articles.items(), 
+                               key=lambda x: max(r['similarity'] for r in relevant if r['article'] == x[0]), 
+                               reverse=True)
+        
+        for article_num, texts in sorted_articles[:3]:
+            answer += f"**Статья {article_num}**\n"
+            
+            # Берем первый текст как представителя статьи
+            full_text = texts[0]
+            
+            # Для юридических вопросов показываем полный текст статьи
+            if any(word in question.lower() for word in ['закон', 'правов', 'федеральн', 'конституц']):
+                # Обрезаем до разумной длины
+                if len(full_text) > 600:
+                    answer += full_text[:600] + "...\n\n"
+                else:
+                    answer += full_text + "\n\n"
+            else:
+                # Для общих вопросов показываем релевантную часть
+                if len(full_text) > 400:
+                    answer += full_text[:400] + "...\n\n"
+                else:
+                    answer += full_text + "\n\n"
+        
+        # Список статей
+        article_list = ', '.join([f"Статья {a}" for a, _ in sorted_articles[:3]])
+        answer += f"\n*Источник: Национальная стратегия развития ИИ, {article_list}*"
+        
+        return answer
 
 def main():
     st.title("📄 Национальная стратегия развития ИИ")
     st.markdown("*Чат на основе официального документа (с изменениями 2024 г.)*")
     
-    # Путь к вашему файлу (должен быть в той же папке, что и app.py)
+    # Путь к файлу
     file_path = "filerag.txt"
     
-    # Проверяем существование файла
+    # Проверяем наличие файла
     if not os.path.exists(file_path):
         st.error(f"❌ Файл {file_path} не найден!")
-        st.info("Пожалуйста, убедитесь, что файл filerag.txt находится в той же папке, что и app.py")
-        
-        # Показываем содержимое папки для отладки
-        st.write("Файлы в текущей папке:")
-        for f in os.listdir('.'):
-            st.write(f"- {f}")
+        st.info("Пожалуйста, убедитесь, что файл filerag.txt находится в той же папке")
         return
     
     # Инициализация RAG
     if 'rag' not in st.session_state:
-        st.session_state.rag = StrategyRAG(file_path)
+        st.session_state.rag = SmartStrategyRAG(file_path)
     
     rag = st.session_state.rag
     
-    # Сайдбар с информацией о документе
+    # Сайдбар
     with st.sidebar:
         st.header("📚 О документе")
         st.markdown("""
         **Национальная стратегия развития ИИ**  
         *до 2030 года (с изменениями 2024)*
         
-        **Структура документа:**
+        **Разделы:**
         - I. Общие положения (ст. 1-5)
         - II. Развитие ИИ в России и мире (ст. 6-23)
         - III. Основные принципы (ст. 24)
@@ -346,19 +337,21 @@ def main():
         """)
         
         if rag.chunks:
+            articles = set(c['article'] for c in rag.chunks)
+            st.metric("Всего статей", len(articles))
             st.metric("Всего чанков", len(rag.chunks))
-            st.metric("Размер эмбеддингов", f"{rag.embeddings.shape[1]}d")
         
-        # Примеры вопросов
-        with st.expander("💡 Примеры вопросов"):
+        # Получение API ключа
+        with st.expander("🔑 Настройка API (для лучших результатов)"):
             st.markdown("""
-            - Что такое искусственный интеллект по определению стратегии?
-            - Какие основные принципы развития ИИ?
-            - Что говорится в статье 25?
-            - Какие цели развития ИИ к 2030 году?
-            - Что такое доверенные технологии?
-            - Какие вызовы стоят перед Россией?
+            1. Получите бесплатный ключ на [openrouter.ai](https://openrouter.ai/)
+            2. Вставьте ключ ниже или добавьте в secrets
             """)
+            api_key = st.text_input("API ключ OpenRouter", type="password")
+            if api_key:
+                st.session_state.rag.api_key = api_key
+                st.success("✅ Ключ сохранен!")
+                st.rerun()
     
     # История чата
     if "messages" not in st.session_state:
@@ -371,12 +364,10 @@ def main():
     
     # Ввод вопроса
     if prompt := st.chat_input("Задайте вопрос о стратегии развития ИИ..."):
-        # Добавляем вопрос
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
         
-        # Получаем ответ
         with st.chat_message("assistant"):
             with st.spinner("🔍 Ищу в документе..."):
                 response = rag.query(prompt)
