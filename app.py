@@ -1,14 +1,15 @@
 """
-RAG с TinyLlama (1.1B) - работает на Streamlit Cloud
+ПРОФЕССИОНАЛЬНЫЙ RAG с OpenRouter LLM
+НАСТОЯЩЕЕ ПОНИМАНИЕ ТЕКСТА
 """
 
 import streamlit as st
 import numpy as np
 import os
+import requests
 import re
-import torch
+import json
 from typing import List, Dict, Any
-from transformers import AutoTokenizer, AutoModelForCausalLM
 
 # Настройка страницы
 st.set_page_config(
@@ -46,87 +47,105 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-class TinyRAG:
-    """RAG с TinyLlama для Streamlit Cloud"""
+# === ВАШ OPENROUTER КЛЮЧ ===
+OPENROUTER_API_KEY = "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"
+# ==========================
+
+class OpenRouterRAG:
+    """RAG с настоящей LLM через OpenRouter"""
     
     def __init__(self, file_path: str):
         self.file_path = file_path
         self.articles = {}
         self.embeddings = {}
+        self.api_key = OPENROUTER_API_KEY
         
-        # Используем TinyLlama (1.1B параметров)
-        model_name = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-        
-        with st.spinner("🔄 Загрузка TinyLlama (1.1B)..."):
-            # Загружаем токенизатор
-            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-            
-            # Загружаем модель в 8-bit для экономии памяти
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                torch_dtype=torch.float16,
-                device_map="auto",
-                low_cpu_mem_usage=True
-            )
-            
-            st.sidebar.success("✅ TinyLlama загружена")
+        # Проверяем ключ
+        if not self.api_key.startswith('sk-or-v1-'):
+            st.error("❌ Неверный формат ключа OpenRouter")
+        else:
+            st.sidebar.success("✅ OpenRouter ключ загружен")
         
         # Загружаем документ
         self._load_document()
     
     def _get_embedding(self, text: str) -> List[float]:
-        """Локальные эмбеддинги"""
+        """Эмбеддинги для поиска"""
+        try:
+            response = requests.post(
+                "https://openrouter.ai/api/v1/embeddings",
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "sentence-transformers/all-mpnet-base-v2",
+                    "input": text[:1000]
+                },
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                return response.json()['data'][0]['embedding']
+        except:
+            pass
+        
+        # Запасной вариант
         words = text.lower().split()
-        dim = 256  # Меньше размерность для скорости
-        
-        # Простые веса для ключевых статей
-        important = {
-            'статья 2': 3.0,
-            'статья 5': 3.0,
-            'федеральный закон': 2.0,
-            'искусственный интеллект': 2.0
-        }
-        
+        dim = 384
         features = np.zeros(dim)
-        
         for word in words:
             features[abs(hash(word)) % dim] += 1
-        
-        for term, weight in important.items():
-            if term in text.lower():
-                features[abs(hash(term)) % dim] += weight
-        
         norm = np.linalg.norm(features)
         if norm > 0:
             features = features / norm
-        
         return features.tolist()
     
-    def _generate(self, context: str, question: str) -> str:
-        """Генерация ответа через TinyLlama"""
+    def _generate_with_llm(self, context: str, question: str) -> str:
+        """
+        Генерация ответа через OpenRouter с моделью Mistral
+        """
         
-        prompt = f"""<|system|>
-Ты - эксперт по Национальной стратегии развития ИИ. Отвечай на основе контекста.</s>
-<|user|>
-Контекст:
-{context[:1000]}
+        prompt = f"""Ты - эксперт по Национальной стратегии развития искусственного интеллекта РФ.
 
-Вопрос: {question}</s>
-<|assistant|>"""
+На основе фрагментов документа ниже, ответь на вопрос.
+ОТВЕЧАЙ СВОИМИ СЛОВАМИ, НЕ КОПИРУЙ ТЕКСТ ИЗ ДОКУМЕНТА.
+Дай полный, структурированный ответ.
+
+ФРАГМЕНТЫ ДОКУМЕНТА:
+{context}
+
+ВОПРОС: {question}
+
+ОТВЕТ:"""
         
-        inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1500).to(self.model.device)
-        
-        with torch.no_grad():
-            outputs = self.model.generate(
-                **inputs,
-                max_new_tokens=200,
-                temperature=0.3,
-                do_sample=True,
-                pad_token_id=self.tokenizer.eos_token_id
+        try:
+            response = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://localhost:8501",
+                    "X-Title": "National AI Strategy Chat"
+                },
+                json={
+                    "model": "mistralai/mistral-7b-instruct:free",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.3,
+                    "max_tokens": 500
+                },
+                timeout=30
             )
-        
-        response = self.tokenizer.decode(outputs[0][inputs["input_ids"].shape[-1]:], skip_special_tokens=True)
-        return response.strip()
+            
+            if response.status_code == 200:
+                return response.json()['choices'][0]['message']['content']
+            elif response.status_code == 402:
+                return "❌ Требуется пополнить баланс OpenRouter (минимум $10)"
+            else:
+                return f"❌ Ошибка API: {response.status_code}"
+                
+        except Exception as e:
+            return f"❌ Ошибка: {str(e)}"
     
     def _load_document(self):
         """Загрузка документа"""
@@ -134,98 +153,144 @@ class TinyRAG:
             with open(self.file_path, 'r', encoding='utf-8') as f:
                 text = f.read()
             
-            # Простое разбиение на статьи
-            articles = re.split(r'\n(\d+)\.', text)
+            # Разбиваем по статьям
+            lines = text.split('\n')
+            current_article = ""
+            current_num = ""
             
-            for i in range(1, len(articles), 2):
-                if i+1 < len(articles):
-                    num = articles[i]
-                    content = articles[i+1]
-                    self.articles[num] = content.strip()
+            for line in lines:
+                match = re.match(r'^(\d+)\.\s+(.*)', line.strip())
+                if match:
+                    if current_num and current_article:
+                        self.articles[current_num] = current_article.strip()
+                    current_num = match.group(1)
+                    current_article = line + "\n"
+                elif current_num:
+                    current_article += line + "\n"
             
-            # Быстрая индексация
-            for num, content in self.articles.items():
-                self.embeddings[num] = self._get_embedding(content)
+            if current_num and current_article:
+                self.articles[current_num] = current_article.strip()
+            
+            # Индексация
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            for i, (num, text) in enumerate(self.articles.items()):
+                status_text.text(f"Индексация статьи {num}...")
+                self.embeddings[num] = self._get_embedding(text)
+                progress_bar.progress((i + 1) / len(self.articles))
+            
+            progress_bar.empty()
+            status_text.empty()
             
             st.sidebar.success(f"✅ Загружено {len(self.articles)} статей")
             
         except Exception as e:
-            st.error(f"❌ Ошибка: {e}")
+            st.error(f"❌ Ошибка загрузки: {e}")
     
-    def search(self, query: str) -> List[str]:
-        """Простой поиск"""
+    def search(self, query: str, k: int = 3) -> List[tuple]:
+        """Поиск релевантных статей"""
         if not self.articles:
             return []
         
         query_emb = np.array(self._get_embedding(query))
         
-        # Приоритет для статей 2 и 5 в зависимости от вопроса
-        if 'закон' in query.lower() or 'правов' in query.lower():
-            return ['2', '5']  # Принудительно показываем статью 2
-        
-        if 'что такое' in query.lower() or 'определение' in query.lower():
-            return ['5']  # Принудительно показываем статью 5
-        
-        # Обычный поиск
-        scores = []
+        # Вычисляем сходство
+        similarities = []
         for num, emb in self.embeddings.items():
             emb_array = np.array(emb)
-            score = np.dot(emb_array, query_emb) / (np.linalg.norm(emb_array) * np.linalg.norm(query_emb) + 1e-8)
-            scores.append((num, score))
+            norm_product = np.linalg.norm(emb_array) * np.linalg.norm(query_emb)
+            if norm_product > 0:
+                similarity = np.dot(emb_array, query_emb) / norm_product
+            else:
+                similarity = 0
+            similarities.append((num, similarity))
         
-        scores.sort(key=lambda x: x[1], reverse=True)
-        return [num for num, _ in scores[:2]]
+        # Сортируем
+        similarities.sort(key=lambda x: x[1], reverse=True)
+        
+        # Приоритет для статьи 2 в юридических вопросах
+        if any(word in query.lower() for word in ['закон', 'правов', 'федеральн', 'конституц']):
+            for i, (num, sim) in enumerate(similarities):
+                if num == '2':
+                    # Поднимаем статью 2 наверх
+                    similarities.pop(i)
+                    similarities.insert(0, ('2', sim + 1.0))
+                    break
+        
+        return similarities[:k]
     
     def query(self, question: str) -> str:
-        """Ответ на вопрос"""
+        """Полный RAG цикл"""
         if not self.articles:
             return "❌ Документ не загружен."
         
-        # Находим релевантные статьи
-        relevant = self.search(question)
+        # Поиск релевантных статей
+        relevant = self.search(question, k=3)
+        
+        if not relevant:
+            return "❌ В документе не найдена информация."
         
         # Собираем контекст
         context_parts = []
-        for num in relevant:
-            text = self.articles[num]
-            if len(text) > 500:
-                text = text[:500] + "..."
-            context_parts.append(f"Статья {num}:\n{text}")
+        articles_used = []
+        
+        for num, sim in relevant:
+            if sim > 0.1:
+                article_text = self.articles[num]
+                if len(article_text) > 800:
+                    article_text = article_text[:800] + "..."
+                context_parts.append(f"[Статья {num}]:\n{article_text}")
+                articles_used.append(num)
         
         context = "\n\n".join(context_parts)
         
-        # Генерируем ответ
-        answer = self._generate(context, question)
+        # Генерируем ответ через LLM
+        answer = self._generate_with_llm(context, question)
         
-        return f'<div class="answer-box">{answer}<div class="source-box">📚 Статьи {", ".join(relevant)}</div></div>'
+        # Добавляем источники
+        answer += f"\n\n<div class='source-box'>📚 Источники: Статьи {', '.join(articles_used)}</div>"
+        
+        return f'<div class="answer-box">{answer}</div>'
 
 def main():
     st.title("📄 Национальная стратегия развития ИИ")
+    st.markdown("*Анализ с настоящей LLM через OpenRouter*")
     
     with st.sidebar:
-        st.header("❓ Вопросы")
+        st.header("❓ Примеры вопросов")
         
         examples = {
             "📌 Какие федеральные законы?": "Какие федеральные законы составляют правовую основу стратегии?",
             "📌 Что такое ИИ?": "Что такое искусственный интеллект по определению стратегии?",
-            "📌 Большие фундаментальные модели": "Что такое большие фундаментальные модели?",
-            "📌 Цели развития": "Какие цели развития ИИ указаны в стратегии?"
+            "📌 Большие фундаментальные модели": "Что такое большие фундаментальные модели и какой порог параметров?",
+            "📌 Цели развития": "Какие цели развития ИИ указаны в стратегии?",
+            "📌 Доверенные технологии": "Что такое доверенные технологии ИИ?"
         }
         
         for btn_text, question in examples.items():
             if st.button(btn_text, use_container_width=True):
                 st.session_state.prompt = question
+        
+        st.markdown("---")
+        st.info("""
+        **Как получить ответы:**
+        1. Ключ OpenRouter загружен
+        2. Нужен баланс минимум $10
+        3. Модель: Mistral-7B
+        """)
     
     # Путь к файлу
     file_path = "filerag.txt"
     
     if not os.path.exists(file_path):
-        st.error(f"❌ Файл не найден!")
+        st.error(f"❌ Файл {file_path} не найден!")
         return
     
     # Инициализация
     if 'rag' not in st.session_state:
-        st.session_state.rag = TinyRAG(file_path)
+        with st.spinner("🔄 Загрузка документа..."):
+            st.session_state.rag = OpenRouterRAG(file_path)
     
     # История
     if "messages" not in st.session_state:
@@ -241,7 +306,7 @@ def main():
             st.markdown(prompt)
         
         with st.chat_message("assistant"):
-            with st.spinner("🤔 Анализирую..."):
+            with st.spinner("🤔 Анализирую документ через LLM..."):
                 response = st.session_state.rag.query(prompt)
                 st.markdown(response, unsafe_allow_html=True)
         
@@ -256,13 +321,13 @@ def main():
                 st.markdown(message["content"])
     
     # Ввод
-    if prompt := st.chat_input("Вопрос..."):
+    if prompt := st.chat_input("Задайте вопрос о стратегии..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
         
         with st.chat_message("assistant"):
-            with st.spinner("🤔 Анализирую..."):
+            with st.spinner("🤔 Анализирую документ через LLM..."):
                 response = st.session_state.rag.query(prompt)
                 st.markdown(response, unsafe_allow_html=True)
         
