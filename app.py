@@ -1,269 +1,533 @@
 """
-Простое RAG приложение для вопросов по документам
+Профессиональная RAG система с реальными эмбеддингами и LLM
 Запуск: streamlit run app.py
 """
 
 import os
-import numpy as np
-import hashlib
-from pathlib import Path
 import streamlit as st
+import numpy as np
+from pathlib import Path
+import hashlib
+import json
+import requests
+from typing import List, Dict, Optional
+import tempfile
 
 # Настройка страницы
 st.set_page_config(
-    page_title="Чат с документами",
-    page_icon="📚",
+    page_title="Профессиональный RAG чат",
+    page_icon="🤖",
     layout="wide"
 )
 
-class SimpleRAG:
-    def __init__(self, model_name="gemma:2b"):
-        self.model_name = model_name
+class ProfessionalRAG:
+    """
+    Продвинутая RAG система с реальными эмбеддингами через Ollama
+    """
+    
+    def __init__(self, embedding_model="mxbai-embed-large", llm_model="gemma2:2b"):
+        """
+        Инициализация с моделями Ollama
+        
+        Args:
+            embedding_model: Модель для эмбеддингов (рекомендуется mxbai-embed-large)
+            llm_model: Модель для генерации ответов
+        """
+        self.embedding_model = embedding_model
+        self.llm_model = llm_model
         self.chunks = []
         self.embeddings = None
         self.sources = []
+        self.metadata = []
+        
+        # Проверяем доступность Ollama
+        self._check_ollama()
         
         # Создаем папку для документов
         self.docs_folder = Path("./documents")
         self.docs_folder.mkdir(exist_ok=True)
+        
+    def _check_ollama(self):
+        """Проверка доступности Ollama и моделей"""
+        try:
+            # Проверяем работает ли Ollama
+            response = requests.get("http://localhost:11434/api/tags")
+            if response.status_code == 200:
+                models = response.json().get('models', [])
+                model_names = [m['name'] for m in models]
+                
+                st.sidebar.info(f"✅ Ollama доступна. Модели: {', '.join(model_names)}")
+                
+                # Проверяем нужные модели
+                if self.embedding_model not in str(model_names):
+                    st.sidebar.warning(f"⚠️ Модель {self.embedding_model} не найдена. Установите: ollama pull {self.embedding_model}")
+                
+                if self.llm_model not in str(model_names):
+                    st.sidebar.warning(f"⚠️ Модель {self.llm_model} не найдена. Установите: ollama pull {self.llm_model}")
+            else:
+                st.sidebar.error("❌ Ollama не отвечает. Запустите: ollama serve")
+        except requests.exceptions.ConnectionError:
+            st.sidebar.error("❌ Ollama не запущена. Установите и запустите: https://ollama.com")
     
-    def _hash_features(self, text, dim=256):
-        """Создание простых признаков на основе хеша"""
-        words = text.lower().split()[:100]
-        features = np.zeros(dim)
+    def get_embedding(self, text: str) -> List[float]:
+        """
+        Получение эмбеддингов через Ollama API
         
-        for word in words:
-            idx = int(hashlib.md5(word.encode()).hexdigest(), 16) % dim
-            features[idx] += 1
-        
-        norm = np.linalg.norm(features)
-        if norm > 0:
-            features = features / norm
-        
-        return features
+        Args:
+            text: Текст для эмбеддинга
+            
+        Returns:
+            Вектор эмбеддинга
+        """
+        try:
+            response = requests.post(
+                "http://localhost:11434/api/embeddings",
+                json={
+                    "model": self.embedding_model,
+                    "prompt": text
+                }
+            )
+            
+            if response.status_code == 200:
+                return response.json()['embedding']
+            else:
+                st.error(f"Ошибка эмбеддинга: {response.status_code}")
+                return None
+        except Exception as e:
+            st.error(f"Ошибка подключения к Ollama: {e}")
+            return None
     
-    def add_text(self, text, source="документ"):
-        """Добавление текста в базу знаний"""
-        # Разбиваем на чанки
-        chunk_size = 500
-        overlap = 50
+    def smart_chunking(self, text: str, source: str, chunk_size: int = 500, overlap: int = 100) -> List[Dict]:
+        """
+        Умное разбиение текста на чанки с перекрытием
+        
+        Args:
+            text: Исходный текст
+            source: Источник
+            chunk_size: Размер чанка в символах
+            overlap: Перекрытие между чанками
+            
+        Returns:
+            Список чанков с метаданными
+        """
+        # Разбиваем на предложения (простая реализация)
+        sentences = text.replace('!', '.').replace('?', '.').split('.')
+        
         chunks = []
-        sources = []
+        current_chunk = ""
+        current_size = 0
         
-        for i in range(0, len(text), chunk_size - overlap):
-            chunk = text[i:i + chunk_size].strip()
-            if chunk and len(chunk) > 50:  # Игнорируем слишком короткие чанки
-                chunks.append(chunk)
-                sources.append(source)
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+                
+            sentence_len = len(sentence)
+            
+            # Если предложение слишком большое, разбиваем его
+            if sentence_len > chunk_size:
+                # Разбиваем большое предложение на части
+                words = sentence.split()
+                temp_chunk = ""
+                for word in words:
+                    if len(temp_chunk) + len(word) + 1 <= chunk_size:
+                        temp_chunk += word + " "
+                    else:
+                        if temp_chunk:
+                            chunks.append({
+                                'text': temp_chunk.strip(),
+                                'source': source,
+                                'chunk_id': len(chunks)
+                            })
+                        temp_chunk = word + " "
+                if temp_chunk:
+                    chunks.append({
+                        'text': temp_chunk.strip(),
+                        'source': source,
+                        'chunk_id': len(chunks)
+                    })
+            else:
+                # Добавляем предложение к текущему чанку
+                if current_size + sentence_len + 1 <= chunk_size:
+                    current_chunk += sentence + ". "
+                    current_size += sentence_len + 2
+                else:
+                    # Сохраняем текущий чанк и начинаем новый с перекрытием
+                    if current_chunk:
+                        chunks.append({
+                            'text': current_chunk.strip(),
+                            'source': source,
+                            'chunk_id': len(chunks)
+                        })
+                    
+                    # Перекрытие: берем последние несколько предложений
+                    words = current_chunk.split()
+                    overlap_text = " ".join(words[-20:]) if len(words) > 20 else current_chunk
+                    current_chunk = overlap_text + " " + sentence + ". "
+                    current_size = len(current_chunk)
         
-        if not chunks:
-            return 0
+        # Добавляем последний чанк
+        if current_chunk:
+            chunks.append({
+                'text': current_chunk.strip(),
+                'source': source,
+                'chunk_id': len(chunks)
+            })
         
-        # Создаем эмбеддинги
-        new_embeddings = np.array([self._hash_features(chunk) for chunk in chunks])
-        
-        # Сохраняем
-        self.chunks.extend(chunks)
-        self.sources.extend(sources)
-        
-        if self.embeddings is None:
-            self.embeddings = new_embeddings
-        else:
-            self.embeddings = np.vstack([self.embeddings, new_embeddings])
-        
-        return len(chunks)
+        return chunks
     
-    def add_file(self, filepath):
-        """Добавление текстового файла"""
+    def add_document(self, text: str, source: str = "document"):
+        """
+        Добавление документа с генерацией эмбеддингов
+        
+        Args:
+            text: Текст документа
+            source: Название источника
+        """
+        with st.spinner(f"🔄 Обработка {source}..."):
+            # Умное разбиение на чанки
+            chunks = self.smart_chunking(text, source)
+            
+            if not chunks:
+                st.warning(f"⚠️ Не удалось создать чанки для {source}")
+                return 0
+            
+            # Прогресс бар
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            # Генерация эмбеддингов для каждого чанка
+            chunk_embeddings = []
+            valid_chunks = []
+            
+            for i, chunk in enumerate(chunks):
+                status_text.text(f"Генерация эмбеддинга {i+1}/{len(chunks)}...")
+                
+                embedding = self.get_embedding(chunk['text'])
+                if embedding:
+                    chunk_embeddings.append(embedding)
+                    valid_chunks.append(chunk)
+                
+                progress_bar.progress((i + 1) / len(chunks))
+            
+            progress_bar.empty()
+            status_text.empty()
+            
+            if not chunk_embeddings:
+                st.error("❌ Не удалось создать эмбеддинги")
+                return 0
+            
+            # Добавляем в хранилище
+            start_idx = len(self.chunks)
+            
+            for chunk in valid_chunks:
+                self.chunks.append(chunk['text'])
+                self.sources.append(chunk['source'])
+                self.metadata.append({
+                    'chunk_id': chunk['chunk_id'],
+                    'source': chunk['source']
+                })
+            
+            # Обновляем эмбеддинги
+            new_embeddings = np.array(chunk_embeddings)
+            if self.embeddings is None:
+                self.embeddings = new_embeddings
+            else:
+                self.embeddings = np.vstack([self.embeddings, new_embeddings])
+            
+            st.success(f"✅ Добавлено {len(valid_chunks)} чанков из {source}")
+            return len(valid_chunks)
+    
+    def add_file(self, filepath: str):
+        """Добавление файла"""
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
                 text = f.read()
-            return self.add_text(text, source=os.path.basename(filepath))
+            return self.add_document(text, source=os.path.basename(filepath))
         except Exception as e:
-            st.error(f"Ошибка при чтении {filepath}: {e}")
+            st.error(f"❌ Ошибка чтения {filepath}: {e}")
             return 0
     
-    def search(self, query, k=3):
-        """Поиск наиболее релевантных чанков"""
+    def hybrid_search(self, query: str, k: int = 5) -> List[Dict]:
+        """
+        Гибридный поиск (семантический + ключевой)
+        
+        Args:
+            query: Запрос
+            k: Количество результатов
+            
+        Returns:
+            Список релевантных чанков
+        """
         if not self.chunks:
             return []
         
-        query_features = self._hash_features(query)
-        similarities = np.dot(self.embeddings, query_features)
-        top_indices = np.argsort(similarities)[-k:][::-1]
+        # Получаем эмбеддинг запроса
+        query_embedding = self.get_embedding(query)
+        if query_embedding is None:
+            return []
         
+        query_embedding = np.array(query_embedding)
+        
+        # Семантический поиск (косинусное сходство)
+        similarities = np.dot(self.embeddings, query_embedding) / (
+            np.linalg.norm(self.embeddings, axis=1) * np.linalg.norm(query_embedding)
+        )
+        
+        # Ключевой поиск (простые ключевые слова)
+        query_words = set(query.lower().split())
+        keyword_scores = []
+        
+        for chunk in self.chunks:
+            chunk_words = set(chunk.lower().split())
+            if query_words:
+                overlap = len(query_words & chunk_words) / len(query_words)
+            else:
+                overlap = 0
+            keyword_scores.append(overlap)
+        
+        # Комбинируем оценки (70% семантика, 30% ключевые слова)
+        combined_scores = 0.7 * similarities + 0.3 * np.array(keyword_scores)
+        
+        # Получаем топ-K результатов
+        top_indices = np.argsort(combined_scores)[-k*2:][::-1]
+        
+        # Дедупликация и сортировка
         results = []
+        seen_sources = set()
+        
         for idx in top_indices:
+            source = self.sources[idx]
+            
+            # Ограничиваем количество чанков из одного источника
+            if source in seen_sources:
+                source_count = sum(1 for r in results if r['source'] == source)
+                if source_count >= 2:  # Максимум 2 чанка из одного источника
+                    continue
+            
             results.append({
                 'text': self.chunks[idx],
-                'source': self.sources[idx],
-                'similarity': float(similarities[idx])
+                'source': source,
+                'similarity': float(combined_scores[idx]),
+                'semantic_score': float(similarities[idx]),
+                'keyword_score': float(keyword_scores[idx])
             })
+            seen_sources.add(source)
+            
+            if len(results) >= k:
+                break
         
         return results
     
-    def query(self, question, k=3):
-        """Ответ на вопрос"""
-        relevant = self.search(question, k=k)
+    def generate_answer(self, question: str, context: List[Dict]) -> str:
+        """
+        Генерация ответа через Ollama LLM
         
-        if not relevant:
+        Args:
+            question: Вопрос пользователя
+            context: Найденный контекст
+            
+        Returns:
+            Ответ
+        """
+        if not context:
             return "❌ Не найдено релевантной информации в документах."
         
-        # Формируем ответ
-        response = f"📚 **На основе документов:**\n\n"
+        # Формируем контекст
+        context_text = ""
+        for i, ctx in enumerate(context, 1):
+            context_text += f"\n[Документ {i} - {ctx['source']}]\n{ctx['text']}\n"
         
-        for i, r in enumerate(relevant, 1):
-            # Обрезаем текст для предпросмотра
-            preview = r['text'][:300] + "..." if len(r['text']) > 300 else r['text']
-            response += f"**{i}. Источник: {r['source']}**\n"
-            response += f"{preview}\n\n"
-            response += f"---\n\n"
-        
-        return response
+        # Создаем промпт на русском
+        prompt = f"""Ты - ассистент, который отвечает на вопросы строго на основе предоставленного контекста.
 
-# Инициализация RAG
+КОНТЕКСТ:
+{context_text}
+
+ИНСТРУКЦИИ:
+1. Отвечай ТОЛЬКО на русском языке
+2. Используй информацию только из предоставленного контекста
+3. Если в контексте нет информации для ответа, скажи "Я не нашел информации об этом в документах"
+4. Будь точным и конкретным
+5. Если уместно, указывай источники информации
+
+ВОПРОС: {question}
+
+ОТВЕТ (на русском языке):"""
+        
+        try:
+            # Отправляем запрос в Ollama
+            response = requests.post(
+                "http://localhost:11434/api/generate",
+                json={
+                    "model": self.llm_model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.3,  # Низкая температура для точности
+                        "top_p": 0.9,
+                        "max_tokens": 1000
+                    }
+                }
+            )
+            
+            if response.status_code == 200:
+                return response.json()['response']
+            else:
+                return f"❌ Ошибка генерации: {response.status_code}"
+                
+        except Exception as e:
+            return f"❌ Ошибка подключения к Ollama: {e}"
+    
+    def query(self, question: str, k: int = 5, show_scores: bool = False) -> str:
+        """
+        Полный цикл RAG: поиск + генерация
+        
+        Args:
+            question: Вопрос
+            k: Количество чанков для поиска
+            show_scores: Показывать ли оценки релевантности
+            
+        Returns:
+            Ответ
+        """
+        # Поиск релевантных чанков
+        relevant = self.hybrid_search(question, k=k)
+        
+        if not relevant:
+            return "❌ Не найдено релевантной информации."
+        
+        # Генерация ответа
+        answer = self.generate_answer(question, relevant)
+        
+        # Добавляем информацию о скорах если нужно
+        if show_scores and relevant:
+            answer += "\n\n---\n**Оценки релевантности:**\n"
+            for r in relevant:
+                answer += f"- {r['source']}: {r['similarity']:.3f} (семантика: {r['semantic_score']:.3f}, ключи: {r['keyword_score']:.3f})\n"
+        
+        return answer
+
+# Инициализация RAG в сессии
 @st.cache_resource
 def init_rag():
-    rag = SimpleRAG()
-    
-    # Загружаем существующие документы
-    docs_folder = Path("./documents")
-    docs_folder.mkdir(exist_ok=True)
-    
-    for file in docs_folder.glob("*.txt"):
-        rag.add_file(str(file))
-    
-    return rag
+    """Инициализация RAG системы"""
+    return ProfessionalRAG(
+        embedding_model="mxbai-embed-large",  # Лучшая модель для эмбеддингов
+        llm_model="gemma2:2b"  # Можно заменить на другую модель
+    )
 
-# Основное приложение
 def main():
-    # Заголовок
-    st.title("📚 Чат с вашими документами")
+    st.title("🤖 Профессиональный RAG чат с документами")
     st.markdown("---")
     
-    # Инициализируем RAG
+    # Инициализация
     rag = init_rag()
     
-    # Сайдбар для управления документами
+    # Сайдбар с настройками
     with st.sidebar:
-        st.header("📁 Управление документами")
+        st.header("⚙️ Настройки")
         
-        # Загрузка файлов
+        # Параметры поиска
+        k_results = st.slider(
+            "Количество результатов поиска",
+            min_value=1,
+            max_value=10,
+            value=5,
+            help="Больше результатов = больше контекста, но дороже"
+        )
+        
+        show_scores = st.checkbox(
+            "Показывать оценки релевантности",
+            value=False,
+            help="Отображать метрики качества поиска"
+        )
+        
+        st.divider()
+        
+        # Модели
+        st.subheader("🤖 Модели")
+        st.info(f"**Эмбеддинги:** {rag.embedding_model}")
+        st.info(f"**LLM:** {rag.llm_model}")
+        
+        st.divider()
+        
+        # Загрузка документов
+        st.header("📁 Загрузка документов")
+        
         uploaded_files = st.file_uploader(
-            "Загрузите текстовые файлы",
-            type=['txt'],
+            "Выберите текстовые файлы",
+            type=['txt', 'md'],
             accept_multiple_files=True
         )
         
         if uploaded_files:
             for uploaded_file in uploaded_files:
-                # Сохраняем файл
-                docs_folder = Path("./documents")
-                docs_folder.mkdir(exist_ok=True)
-                
-                file_path = docs_folder / uploaded_file.name
-                with open(file_path, 'wb') as f:
-                    f.write(uploaded_file.getbuffer())
+                # Сохраняем временно
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.txt', mode='w', encoding='utf-8') as f:
+                    content = uploaded_file.read().decode('utf-8')
+                    f.write(content)
+                    temp_path = f.name
                 
                 # Добавляем в RAG
-                rag.add_file(str(file_path))
-            
-            st.success(f"✅ Загружено файлов: {len(uploaded_files)}")
-            st.rerun()
+                rag.add_file(temp_path)
+                
+                # Удаляем временный файл
+                os.unlink(temp_path)
         
         st.divider()
         
         # Список загруженных документов
-        st.header("📋 Загруженные документы")
-        docs_folder = Path("./documents")
-        files = list(docs_folder.glob("*.txt"))
-        
-        if files:
-            for file in files:
-                col1, col2, col3 = st.columns([3, 1, 1])
-                with col1:
-                    st.write(f"📄 {file.name}")
-                with col2:
-                    # Кнопка просмотра
-                    if st.button("👁️", key=f"view_{file.name}"):
-                        with open(file, 'r', encoding='utf-8') as f:
-                            content = f.read()
-                        st.session_state[f"content_{file.name}"] = content
-                
-                with col3:
-                    # Кнопка удаления
-                    if st.button("🗑️", key=f"del_{file.name}"):
-                        file.unlink()
-                        st.rerun()
-                
-                # Показываем содержимое если есть
-                if f"content_{file.name}" in st.session_state:
-                    with st.expander(f"Содержимое {file.name}"):
-                        st.text(st.session_state[f"content_{file.name}"][:500] + "...")
+        st.header("📋 Документы в базе")
+        if rag.sources:
+            unique_sources = set(rag.sources)
+            for source in unique_sources:
+                count = rag.sources.count(source)
+                st.write(f"📄 {source} ({count} чанков)")
+            
+            st.write(f"**Всего чанков:** {len(rag.chunks)}")
         else:
-            st.info("📭 Нет загруженных документов")
-        
-        st.divider()
-        
-        # Статистика
-        st.header("📊 Статистика")
-        st.write(f"**Всего чанков:** {len(rag.chunks)}")
-        st.write(f"**Документов:** {len(files)}")
-        
-        if rag.chunks:
-            st.write(f"**Размер эмбеддингов:** {rag.embeddings.shape}")
+            st.info("Нет загруженных документов")
     
-    # Основной чат
+    # Основной интерфейс
     col1, col2 = st.columns([2, 1])
     
     with col1:
-        st.subheader("💬 Задайте вопрос по документам")
+        st.subheader("💬 Задайте вопрос")
         
-        # Поле ввода вопроса
-        question = st.text_input(
-            "Введите ваш вопрос:",
-            placeholder="Например: О чем говорится в документах?",
-            key="question_input"
-        )
+        # История сообщений
+        if "messages" not in st.session_state:
+            st.session_state.messages = []
         
-        # Кнопка отправки
-        if st.button("🔍 Спросить", type="primary"):
-            if question:
-                with st.spinner("🔎 Ищу ответ в документах..."):
-                    answer = rag.query(question)
-                    
-                    # Сохраняем в историю
-                    if "history" not in st.session_state:
-                        st.session_state.history = []
-                    
-                    st.session_state.history.append({
-                        "question": question,
-                        "answer": answer
-                    })
+        # Отображение истории
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+        
+        # Ввод вопроса
+        if prompt := st.chat_input("Введите ваш вопрос по документам..."):
+            # Добавляем вопрос пользователя
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
+            
+            # Генерируем ответ
+            with st.chat_message("assistant"):
+                with st.spinner("🔍 Ищу ответ в документах..."):
+                    response = rag.query(prompt, k=k_results, show_scores=show_scores)
+                    st.markdown(response)
+            
+            st.session_state.messages.append({"role": "assistant", "content": response})
     
     with col2:
         st.subheader("ℹ️ Информация")
-        st.info(
-            """
-            **Как использовать:**
-            1. Загрузите текстовые файлы в боковой панели
-            2. Задайте вопрос по содержимому
-            3. Получите ответ с указанием источников
-            
-            **Поддерживаемые форматы:**
-            - Текстовые файлы (.txt)
-            """
-        )
-    
-    # История вопросов
-    if "history" in st.session_state and st.session_state.history:
-        st.markdown("---")
-        st.subheader("📝 История вопросов")
         
-        for i, item in enumerate(reversed(st.session_state.history[-5:])):
-            with st.expander(f"❓ {item['question'][:50]}..."):
-                st.markdown(item['answer'])
-
-# Запуск приложения
-if __name__ == "__main__":
-    main()
+        with st.expander("Как улучшить качество"):
+            st.markdown("""
+            **📌 Рекомендации:**
+            
+            1. **Установите лучшие модели:**
+            ```bash
+            ollama pull mxbai-embed-large  # для эмбеддингов
+            ollama pull gemma2:2b          # для ответов
+            ollama pull llama3.2:3b        # альтернатива
