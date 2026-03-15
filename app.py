@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 from typing import List, Dict
 import hashlib
+import re  # 👈 ЭТОТ ИМПОРТ БЫЛ ОТСУТСТВОВАТЬ
 
 # Настройка страницы - минимализм
 st.set_page_config(
@@ -48,7 +49,6 @@ class StrategyRAG:
         Сохраняет структуру документа
         """
         # Разбиваем по номерам статей (пунктов)
-        import re
         
         # Ищем все пункты (1., 2., 3., и т.д.)
         chunks = []
@@ -156,18 +156,25 @@ class StrategyRAG:
                 return
             
             # Генерация эмбеддингов
-            with st.spinner("🔄 Обработка документа..."):
-                chunk_embeddings = []
-                for chunk in chunks:
-                    embedding = self._get_embedding(chunk)
-                    chunk_embeddings.append(embedding)
-                
-                # Сохраняем чанки и эмбеддинги
-                self.chunks = chunks
-                self.sources = ["Национальная стратегия ИИ"] * len(chunks)
-                self.embeddings = np.array(chunk_embeddings)
-                
-                st.sidebar.success(f"✅ Документ загружен: {len(chunks)} чанков")
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            chunk_embeddings = []
+            for i, chunk in enumerate(chunks):
+                status_text.text(f"Обработка чанка {i+1}/{len(chunks)}...")
+                embedding = self._get_embedding(chunk)
+                chunk_embeddings.append(embedding)
+                progress_bar.progress((i + 1) / len(chunks))
+            
+            progress_bar.empty()
+            status_text.empty()
+            
+            # Сохраняем чанки и эмбеддинги
+            self.chunks = chunks
+            self.sources = ["Национальная стратегия ИИ"] * len(chunks)
+            self.embeddings = np.array(chunk_embeddings)
+            
+            st.sidebar.success(f"✅ Документ загружен: {len(chunks)} чанков")
                 
         except Exception as e:
             st.error(f"❌ Ошибка загрузки документа: {e}")
@@ -191,9 +198,8 @@ class StrategyRAG:
             similarities = np.zeros(len(self.chunks))
         
         # Усиление для чанков с номерами статей (прямые ссылки)
+        numbers = re.findall(r'\d+', query)
         for i, chunk in enumerate(self.chunks):
-            # Если в чанке есть номер статьи, который совпадает с числом в запросе
-            numbers = re.findall(r'\d+', query)
             for num in numbers:
                 if num in chunk[:50]:  # Проверяем начало чанка
                     similarities[i] += 0.2
@@ -224,8 +230,7 @@ class StrategyRAG:
     
     def _extract_article_number(self, text: str) -> str:
         """Извлечение номера статьи из текста"""
-        import re
-        match = re.match(r'^(\d+)\.', text.strip())
+        match = re.match(r'^\s*(\d+)\.', text.strip())
         if match:
             return f"Статья {match.group(1)}"
         return ""
@@ -282,6 +287,8 @@ class StrategyRAG:
         # Добавляем ссылки на статьи
         if used_articles:
             answer += f"\n*Источник: Национальная стратегия развития ИИ, {', '.join(used_articles)}*"
+        else:
+            answer += f"\n*Источник: Национальная стратегия развития ИИ*"
         
         return answer
     
@@ -341,6 +348,17 @@ def main():
         if rag.chunks:
             st.metric("Всего чанков", len(rag.chunks))
             st.metric("Размер эмбеддингов", f"{rag.embeddings.shape[1]}d")
+        
+        # Примеры вопросов
+        with st.expander("💡 Примеры вопросов"):
+            st.markdown("""
+            - Что такое искусственный интеллект по определению стратегии?
+            - Какие основные принципы развития ИИ?
+            - Что говорится в статье 25?
+            - Какие цели развития ИИ к 2030 году?
+            - Что такое доверенные технологии?
+            - Какие вызовы стоят перед Россией?
+            """)
     
     # История чата
     if "messages" not in st.session_state:
