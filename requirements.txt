@@ -3,5 +3,5 @@ numpy
 torch
 transformers
 accelerate
+bitsandbytes
 sentencepiece
-protobuf
