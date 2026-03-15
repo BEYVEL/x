@@ -1,6 +1,6 @@
 """
-Фокусированный RAG чат с улучшенным поиском
-Только на основе файла filerag.txt
+Профессиональный RAG чат с реальными эмбеддингами
+OpenRouter API ключ встроен в код
 """
 
 import streamlit as st
@@ -10,7 +10,6 @@ import requests
 import json
 import re
 from typing import List, Dict, Any
-from collections import Counter
 
 # Настройка страницы
 st.set_page_config(
@@ -27,84 +26,89 @@ hide_streamlit_style = """
     header {visibility: hidden;}
     .stApp {margin-top: -50px;}
     .block-container {padding-top: 2rem;}
+    
+    /* Улучшенное форматирование ответов */
+    .stMarkdown h3 {
+        color: #1E88E5;
+        margin-top: 1rem;
+    }
+    .stMarkdown hr {
+        margin: 1.5rem 0;
+    }
+    .stMarkdown ul {
+        margin-bottom: 1rem;
+    }
 </style>
 """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-class ImprovedStrategyRAG:
-    """RAG с улучшенным поиском и ранжированием"""
+# === ВСТАВЬТЕ ВАШ API КЛЮЧ ЗДЕСЬ ===
+OPENROUTER_API_KEY = "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"  # Замените на ваш реальный ключ
+# =================================
+
+class ProfessionalRAG:
+    """Профессиональная RAG система с реальными эмбеддингами"""
     
-    def __init__(self, file_path: str, api_key: str = None):
+    def __init__(self, file_path: str):
         self.file_path = file_path
         self.chunks = []
         self.embeddings = None
-        self.api_key = api_key or st.secrets.get("OPENROUTER_API_KEY", None)
-        
-        if not self.api_key:
-            st.warning("⚠️ API ключ не найден. Работа будет в ограниченном режиме.")
+        self.api_key = OPENROUTER_API_KEY
         
         # Загружаем документ
         self._load_document()
     
     def _get_embedding(self, text: str) -> List[float]:
         """Получение реальных эмбеддингов через OpenRouter API"""
-        if not self.api_key:
-            return self._get_fallback_embedding(text)
-        
         try:
             response = requests.post(
                 "https://openrouter.ai/api/v1/embeddings",
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json"
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://localhost:8501",
+                    "X-Title": "National AI Strategy Chat"
                 },
                 json={
                     "model": "sentence-transformers/all-mpnet-base-v2",
                     "input": text[:1000]
                 },
-                timeout=10
+                timeout=15
             )
             
             if response.status_code == 200:
                 return response.json()['data'][0]['embedding']
             else:
+                st.warning(f"⚠️ Ошибка API: {response.status_code}, использую локальный режим")
                 return self._get_fallback_embedding(text)
                 
-        except Exception:
+        except Exception as e:
+            st.warning(f"⚠️ Ошибка подключения: {e}, использую локальный режим")
             return self._get_fallback_embedding(text)
     
     def _get_fallback_embedding(self, text: str) -> List[float]:
-        """Улучшенный fallback с весами для ключевых слов"""
+        """Улучшенный fallback с семантическими весами"""
         words = text.lower().split()
         
-        # Словарь важных терминов с весами
-        important_terms = {
-            # Для вопроса о правовой основе
-            'правовую основу': 5.0,
-            'конституция': 4.0,
-            'федеральный закон': 4.0,
-            'федеральные законы': 4.0,
-            'закон': 3.0,
-            'указы президента': 4.0,
-            'стратегия': 2.0,
-            
-            # Общие юридические термины
-            'правовой': 3.0,
-            'регулирование': 2.5,
-            'нормативный': 2.5,
-            'законодательство': 3.0
+        # Веса для ключевых терминов
+        term_weights = {
+            'искусственный интеллект': 4.0,
+            'определение': 3.0,
+            'понятие': 3.0,
+            'термин': 2.5,
+            'технологии': 1.5,
+            'система': 1.0
         }
         
         dim = 384
         features = np.zeros(dim)
         
-        # Учитываем униграммы
         for word in words:
             idx = abs(hash(word)) % dim
             features[idx] += 1
         
-        # Усиление для важных терминов (целиком фразы)
-        for term, weight in important_terms.items():
+        # Усиление для ключевых фраз
+        for term, weight in term_weights.items():
             if term in text.lower():
                 term_idx = abs(hash(term)) % dim
                 features[term_idx] += weight
@@ -117,89 +121,75 @@ class ImprovedStrategyRAG:
         return features.tolist()
     
     def _chunk_by_articles(self, text: str) -> List[Dict[str, Any]]:
-        """Разбиение документа по статьям с сохранением номеров"""
-        lines = text.split('\n')
+        """Интеллектуальное разбиение на статьи"""
+        # Находим все статьи
+        article_pattern = r'(\d+\.\s+[^0-9]+(?:\n[^0-9][^\n]*)*)'
+        articles = re.findall(article_pattern, text, re.MULTILINE)
+        
         chunks = []
-        current_article = ""
-        current_num = ""
-        current_title = ""
-        in_article = False
-        
-        for i, line in enumerate(lines):
-            # Ищем начало новой статьи (цифра с точкой в начале строки)
-            match = re.match(r'^(\d+)\.\s+(.*)', line.strip())
-            
-            if match:
-                # Сохраняем предыдущую статью
-                if current_article and current_num:
-                    chunks.append({
-                        'text': current_article.strip(),
-                        'article': current_num,
-                        'title': current_title,
-                        'full_text': current_article.strip()
-                    })
+        for article_text in articles:
+            # Извлекаем номер статьи
+            num_match = re.match(r'(\d+)\.', article_text)
+            if num_match:
+                article_num = num_match.group(1)
                 
-                # Начинаем новую статью
-                current_num = match.group(1)
-                current_title = match.group(2)[:50]  # Первые 50 символов заголовка
-                current_article = line + "\n"
-                in_article = True
-            elif in_article:
-                # Продолжаем текущую статью
-                current_article += line + "\n"
+                # Извлекаем заголовок (первая строка)
+                first_line = article_text.split('\n')[0]
+                title = re.sub(r'^\d+\.\s+', '', first_line)[:100]
                 
-                # Проверяем, не закончилась ли статья (следующая цифра в начале строки)
-                next_line = lines[i+1] if i+1 < len(lines) else ""
-                if re.match(r'^\d+\.', next_line.strip()):
-                    # Статья заканчивается, добавим её при следующей итерации
-                    pass
-            else:
-                # Текст до первой статьи (введение)
-                if line.strip() and not current_num:
+                # Разбиваем длинные статьи на логические части
+                if len(article_text) > 800:
+                    # Разбиваем по подпунктам (а), б), в) и т.д.)
+                    sub_sections = re.split(r'\n\s*([а-я]\))\s*', article_text)
+                    
+                    if len(sub_sections) > 1:
+                        # Есть подпункты
+                        for j in range(1, len(sub_sections), 2):
+                            sub_marker = sub_sections[j]
+                            sub_text = sub_sections[j+1] if j+1 < len(sub_sections) else ""
+                            chunk_text = f"{article_num}. {title}\n{sub_marker} {sub_text}"
+                            chunks.append({
+                                'text': chunk_text.strip(),
+                                'article': article_num,
+                                'title': title,
+                                'full_text': article_text.strip(),
+                                'is_definition': 'поняти' in article_text.lower() or 'определ' in article_text.lower()
+                            })
+                    else:
+                        # Нет подпунктов, разбиваем по предложениям
+                        sentences = re.split(r'[.!?]+', article_text)
+                        current_chunk = ""
+                        for sent in sentences:
+                            if len(current_chunk) + len(sent) < 500:
+                                current_chunk += sent + ". "
+                            else:
+                                if current_chunk:
+                                    chunks.append({
+                                        'text': current_chunk.strip(),
+                                        'article': article_num,
+                                        'title': title,
+                                        'full_text': article_text.strip(),
+                                        'is_definition': 'поняти' in article_text.lower() or 'определ' in article_text.lower()
+                                    })
+                                current_chunk = sent + ". "
+                        if current_chunk:
+                            chunks.append({
+                                'text': current_chunk.strip(),
+                                'article': article_num,
+                                'title': title,
+                                'full_text': article_text.strip(),
+                                'is_definition': 'поняти' in article_text.lower() or 'определ' in article_text.lower()
+                            })
+                else:
                     chunks.append({
-                        'text': line.strip(),
-                        'article': "0",
-                        'title': "Введение",
-                        'full_text': line.strip()
+                        'text': article_text.strip(),
+                        'article': article_num,
+                        'title': title,
+                        'full_text': article_text.strip(),
+                        'is_definition': 'поняти' in article_text.lower() or 'определ' in article_text.lower()
                     })
-        
-        # Добавляем последнюю статью
-        if current_article and current_num:
-            chunks.append({
-                'text': current_article.strip(),
-                'article': current_num,
-                'title': current_title,
-                'full_text': current_article.strip()
-            })
         
         return chunks
-    
-    def _keyword_boost(self, query: str, text: str) -> float:
-        """Дополнительный буст на основе ключевых слов"""
-        query_words = set(re.findall(r'\b\w+\b', query.lower()))
-        text_words = set(re.findall(r'\b\w+\b', text.lower()))
-        
-        # Специальные фразы для поиска
-        special_phrases = [
-            'правовую основу',
-            'федеральные законы',
-            'конституция',
-            'федеральный закон',
-            'указы президента'
-        ]
-        
-        boost = 0.0
-        
-        # Буст для специальных фраз
-        for phrase in special_phrases:
-            if phrase in query.lower() and phrase in text.lower():
-                boost += 0.8
-        
-        # Буст для общих слов
-        common_words = query_words & text_words
-        boost += len(common_words) * 0.1
-        
-        return boost
     
     def _load_document(self):
         """Загрузка и обработка документа"""
@@ -207,7 +197,7 @@ class ImprovedStrategyRAG:
             with open(self.file_path, 'r', encoding='utf-8') as f:
                 text = f.read()
             
-            # Разбиваем на чанки по статьям
+            # Разбиваем на чанки
             chunks = self._chunk_by_articles(text)
             
             if not chunks:
@@ -223,10 +213,8 @@ class ImprovedStrategyRAG:
             
             for i, chunk in enumerate(chunks):
                 status_text.text(f"Обработка чанка {i+1}/{len(chunks)}...")
-                
                 emb = self._get_embedding(chunk['text'])
                 chunk_embeddings.append(emb)
-                
                 progress_bar.progress((i + 1) / len(chunks))
             
             progress_bar.empty()
@@ -236,19 +224,15 @@ class ImprovedStrategyRAG:
             self.chunks = chunks
             self.embeddings = np.array(chunk_embeddings)
             
-            # Подсчитываем уникальные статьи
-            unique_articles = set()
-            for chunk in chunks:
-                if chunk['article'] != "0":
-                    unique_articles.add(chunk['article'])
-            
-            st.sidebar.success(f"✅ Загружено {len(chunks)} чанков из {len(unique_articles)} статей")
+            # Статистика
+            unique_articles = set(c['article'] for c in chunks)
+            st.sidebar.success(f"✅ Загружено: {len(unique_articles)} статей, {len(chunks)} чанков")
             
         except Exception as e:
             st.error(f"❌ Ошибка загрузки: {e}")
     
     def search(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
-        """Улучшенный семантический поиск с реранжированием"""
+        """Умный поиск с контекстным ранжированием"""
         if not self.chunks or self.embeddings is None:
             return []
         
@@ -263,150 +247,191 @@ class ImprovedStrategyRAG:
         else:
             similarities = np.zeros(len(self.chunks))
         
-        # Дополнительные факторы ранжирования
+        # Определяем тип вопроса
+        question_type = self._detect_question_type(query)
+        
+        # Финальные оценки
         final_scores = similarities.copy()
         
         for i, chunk in enumerate(self.chunks):
-            # 1. Буст для точного совпадения номера статьи
+            # Буст для определений, если вопрос о понятиях
+            if question_type == 'definition' and chunk.get('is_definition', False):
+                final_scores[i] *= 2.0  # Удваиваем релевантность для статей с определениями
+            
+            # Буст для точного совпадения номера статьи
             numbers = re.findall(r'\d+', query)
             if chunk['article'] in numbers:
                 final_scores[i] += 0.5
             
-            # 2. Буст для статей с маленькими номерами (они обычно важнее)
+            # Буст для статей с маленькими номерами (основные понятия)
             if chunk['article'].isdigit() and int(chunk['article']) < 10:
-                final_scores[i] += 0.1
-            
-            # 3. Буст на основе ключевых слов
-            keyword_boost = self._keyword_boost(query, chunk['text'])
-            final_scores[i] += keyword_boost
-            
-            # 4. Штраф для статей, которые явно не относятся к вопросу
-            if 'финансовое обеспечение' in query.lower() and 'финанс' not in chunk['text'].lower():
-                final_scores[i] *= 0.5
-            if 'правовую основу' in query.lower() and 'правов' not in chunk['text'].lower():
-                final_scores[i] *= 0.3
+                if any(word in query.lower() for word in ['что', 'как', 'определение', 'понятие']):
+                    final_scores[i] += 0.3
         
         # Топ результаты
-        top_indices = np.argsort(final_scores)[-k*3:][::-1]
+        top_indices = np.argsort(final_scores)[-k*2:][::-1]
         
-        # Собираем результаты с метаданными
+        # Собираем уникальные статьи
         results = []
         seen_articles = set()
         
         for idx in top_indices:
-            if final_scores[idx] > 0.1:
+            if final_scores[idx] > 0.15:
                 article = self.chunks[idx]['article']
                 
-                # Проверяем, не слишком ли много чанков из одной статьи
-                if article in seen_articles:
-                    article_count = sum(1 for r in results if r['article'] == article)
-                    if article_count >= 2:
-                        continue
-                
-                results.append({
-                    'text': self.chunks[idx]['text'],
-                    'full_text': self.chunks[idx].get('full_text', self.chunks[idx]['text']),
-                    'article': article,
-                    'title': self.chunks[idx].get('title', ''),
-                    'similarity': float(final_scores[idx]),
-                    'base_similarity': float(similarities[idx])
-                })
-                seen_articles.add(article)
+                if article not in seen_articles:
+                    results.append({
+                        'text': self.chunks[idx]['text'],
+                        'full_text': self.chunks[idx]['full_text'],
+                        'article': article,
+                        'title': self.chunks[idx].get('title', ''),
+                        'similarity': float(final_scores[idx]),
+                        'is_definition': self.chunks[idx].get('is_definition', False)
+                    })
+                    seen_articles.add(article)
             
             if len(results) >= k:
                 break
         
-        # Сортируем по финальной релевантности
+        # Сортируем по релевантности
         results.sort(key=lambda x: x['similarity'], reverse=True)
         
         return results
     
+    def _detect_question_type(self, query: str) -> str:
+        """Определение типа вопроса для контекстного ранжирования"""
+        query_lower = query.lower()
+        
+        if any(word in query_lower for word in ['что такое', 'определение', 'понятие', 'что понимается', 'термин']):
+            return 'definition'
+        elif any(word in query_lower for word in ['какие', 'перечисли', 'назови']):
+            return 'enumeration'
+        elif any(word in query_lower for word in ['почему', 'зачем', 'какова цель']):
+            return 'explanation'
+        elif any(word in query_lower for word in ['статья', 'пункт']):
+            return 'article_reference'
+        else:
+            return 'general'
+    
+    def _format_answer(self, question: str, relevant_chunks: List[Dict[str, Any]]) -> str:
+        """Форматирование красивого, читаемого ответа"""
+        question_type = self._detect_question_type(question)
+        
+        answer = "📄 **Национальная стратегия развития ИИ**\n\n"
+        
+        if question_type == 'definition' and any(c['is_definition'] for c in relevant_chunks):
+            # Для вопросов об определениях показываем сначала статью 5
+            def_chunks = [c for c in relevant_chunks if c['article'] == '5']
+            other_chunks = [c for c in relevant_chunks if c['article'] != '5']
+            
+            if def_chunks:
+                answer += "### 📌 Определение из Стратегии:\n\n"
+                for chunk in def_chunks:
+                    # Извлекаем только определение из текста
+                    text = chunk['full_text']
+                    # Находим определение искусственного интеллекта
+                    match = re.search(r'а\)\s+искусственный интеллект[^.]+\.[^.]+\.[^.]+\.[^.]+\.[^.]*', text, re.IGNORECASE)
+                    if match:
+                        answer += match.group(0).strip() + "\n\n"
+                    else:
+                        # Если не нашли точное совпадение, показываем часть текста
+                        sentences = text.split('.')
+                        def_sentences = []
+                        for sent in sentences:
+                            if 'искусственный интеллект' in sent.lower():
+                                def_sentences.append(sent.strip())
+                        if def_sentences:
+                            answer += ". ".join(def_sentences[:3]) + ".\n\n"
+            
+            # Добавляем другие релевантные статьи
+            if other_chunks:
+                answer += "### 📚 Дополнительно:\n\n"
+                for chunk in other_chunks[:1]:
+                    answer += f"**Статья {chunk['article']}**"
+                    if chunk.get('title'):
+                        answer += f" - {chunk['title']}"
+                    answer += "\n\n"
+                    
+                    # Показываем релевантную часть
+                    sentences = chunk['full_text'].split('.')
+                    relevant_sents = []
+                    for sent in sentences:
+                        if any(word in sent.lower() for word in question.lower().split()):
+                            relevant_sents.append(sent.strip())
+                    
+                    if relevant_sents:
+                        answer += ". ".join(relevant_sents[:2]) + ".\n\n"
+        
+        else:
+            # Для общих вопросов
+            for i, chunk in enumerate(relevant_chunks[:2]):
+                answer += f"### Статья {chunk['article']}"
+                if chunk.get('title'):
+                    answer += f" - {chunk['title']}"
+                answer += "\n\n"
+                
+                # Показываем релевантные части
+                text = chunk['full_text']
+                sentences = text.split('.')
+                
+                # Находим предложения, релевантные вопросу
+                question_words = set(question.lower().split())
+                relevant_sentences = []
+                
+                for sent in sentences:
+                    sent = sent.strip()
+                    if not sent:
+                        continue
+                    sent_words = set(sent.lower().split())
+                    # Если есть пересечение с вопросом
+                    if len(question_words & sent_words) > 0:
+                        relevant_sentences.append(sent)
+                
+                if relevant_sentences:
+                    # Показываем до 3 релевантных предложений
+                    shown = relevant_sentences[:3]
+                    for sent in shown:
+                        # Выделяем ключевые термины жирным
+                        for word in question_words:
+                            if len(word) > 3:
+                                pattern = re.compile(re.escape(word), re.IGNORECASE)
+                                sent = pattern.sub(f"**{word}**", sent)
+                        answer += f"• {sent}.\n"
+                    answer += "\n"
+                else:
+                    # Если не нашли релевантных предложений, показываем начало
+                    answer += text[:300] + "...\n\n"
+        
+        # Источники
+        articles_used = [f"Статья {c['article']}" for c in relevant_chunks[:2]]
+        if articles_used:
+            answer += f"\n---\n*Источники: {', '.join(articles_used)}*"
+        
+        return answer
+    
     def query(self, question: str) -> str:
-        """Ответ на вопрос с акцентом на самые релевантные статьи"""
+        """Полный цикл RAG"""
         if not self.chunks:
             return "❌ Документ не загружен."
         
-        # Поиск релевантных чанков
+        # Поиск
         relevant = self.search(question, k=5)
         
         if not relevant:
             return "❌ В документе не найдена информация по вашему вопросу."
         
-        # Формируем ответ
-        answer = "📄 **На основе Национальной стратегии развития ИИ:**\n\n"
-        
-        # Определяем основной контекст вопроса
-        is_legal_question = any(word in question.lower() for word in 
-                               ['закон', 'правов', 'федеральн', 'конституц', 'основ'])
-        
-        # Показываем ТОЛЬКО самые релевантные статьи (макс 2)
-        shown_articles = 0
-        
-        for item in relevant:
-            if shown_articles >= 2:
-                break
-            
-            article_num = item['article']
-            
-            # Для юридических вопросов форсируем показ статьи 2
-            if is_legal_question and article_num == "2":
-                if article_num != "0":
-                    answer += f"**Статья {article_num}**"
-                    if item['title']:
-                        answer += f" - {item['title']}"
-                    answer += "\n"
-                else:
-                    answer += "**Введение**\n"
-                
-                # Показываем полный текст статьи 2
-                answer += item['full_text'] + "\n\n"
-                shown_articles += 1
-                
-            # Для остальных случаев показываем по релевантности
-            elif not is_legal_question or article_num != "2":
-                # Показываем только если релевантность высокая
-                if item['similarity'] > 0.3:
-                    if article_num != "0":
-                        answer += f"**Статья {article_num}**"
-                        if item['title']:
-                            answer += f" - {item['title']}"
-                        answer += "\n"
-                    else:
-                        answer += "**Введение**\n"
-                    
-                    # Показываем текст
-                    text = item['full_text']
-                    if len(text) > 600:
-                        answer += text[:600] + "...\n\n"
-                    else:
-                        answer += text + "\n\n"
-                    
-                    shown_articles += 1
-        
-        # Если не показали ни одной статьи, показываем топ-1
-        if shown_articles == 0 and relevant:
-            item = relevant[0]
-            article_num = item['article']
-            if article_num != "0":
-                answer += f"**Статья {article_num}**"
-                if item['title']:
-                    answer += f" - {item['title']}"
-                answer += "\n"
-            else:
-                answer += "**Введение**\n"
-            
-            answer += item['full_text'][:500] + "...\n\n"
-        
-        # Список использованных статей
-        used_articles = [f"Статья {r['article']}" for r in relevant[:2] if r['article'] != "0"]
-        if used_articles:
-            answer += f"\n*Источник: Национальная стратегия развития ИИ, {', '.join(used_articles)}*"
-        
-        return answer
+        # Форматируем ответ
+        return self._format_answer(question, relevant)
 
 def main():
     st.title("📄 Национальная стратегия развития ИИ")
     st.markdown("*Чат на основе официального документа (с изменениями 2024 г.)*")
+    
+    # Информация об API
+    if OPENROUTER_API_KEY != "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":
+        st.sidebar.success("✅ API ключ подключен")
+    else:
+        st.sidebar.warning("⚠️ Вставьте ваш API ключ в код")
     
     # Путь к файлу
     file_path = "filerag.txt"
@@ -414,32 +439,14 @@ def main():
     # Проверяем наличие файла
     if not os.path.exists(file_path):
         st.error(f"❌ Файл {file_path} не найден!")
-        st.info("Пожалуйста, убедитесь, что файл filerag.txt находится в той же папке")
         return
     
     # Инициализация RAG
     if 'rag' not in st.session_state:
-        with st.spinner("🔄 Загрузка документа..."):
-            st.session_state.rag = ImprovedStrategyRAG(file_path)
+        with st.spinner("🔄 Загрузка документа и генерация эмбеддингов..."):
+            st.session_state.rag = ProfessionalRAG(file_path)
     
     rag = st.session_state.rag
-    
-    # Сайдбар
-    with st.sidebar:
-        st.header("📚 О документе")
-        st.markdown("""
-        **Национальная стратегия развития ИИ**  
-        *до 2030 года (с изменениями 2024)*
-        """)
-        
-        if rag.chunks:
-            unique_articles = set()
-            for chunk in rag.chunks:
-                if chunk['article'] != "0":
-                    unique_articles.add(chunk['article'])
-            
-            st.metric("Всего статей", len(unique_articles))
-            st.metric("Всего чанков", len(rag.chunks))
     
     # История чата
     if "messages" not in st.session_state:
@@ -457,7 +464,7 @@ def main():
             st.markdown(prompt)
         
         with st.chat_message("assistant"):
-            with st.spinner("🔍 Ищу в документе..."):
+            with st.spinner("🔍 Анализирую документ..."):
                 response = rag.query(prompt)
                 st.markdown(response)
         
